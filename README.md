@@ -200,11 +200,139 @@ The checkpoint system allows you to:
 
 Checkpoint data is stored in `.checkpoint.json` in the output directory.
 
+### GLOMAP Pipeline
+
+The `run_glomap.py` script provides a hybrid SFM pipeline that combines COLMAP's robust feature extraction and matching with GLOMAP's fast global reconstruction approach.
+
+#### Features
+
+- **Hybrid Approach**: COLMAP for features/matching, GLOMAP for reconstruction
+- **Faster Reconstruction**: Global optimization is significantly faster than incremental approach
+- **Same Pipeline Stages**: Maintains compatibility with COLMAP workflow
+- **Dual Configuration**: Separate configs for COLMAP and GLOMAP stages
+- **All COLMAP Features**: Checkpoint system, logging, flexible execution, etc.
+
+#### Basic Usage
+
+```bash
+python run_glomap.py \
+  --input_images /path/to/images \
+  --output /path/to/output \
+  --colmap_config /path/to/colmap_config.ini \
+  --glomap_config /path/to/glomap_config.ini
+```
+
+#### Command-Line Arguments
+
+**Required:**
+- `--input_images`: Path to directory containing input images
+- `--output`: Path to output directory (database and results will be stored here)
+- `--colmap_config`: Path to COLMAP INI configuration file (for feature extraction/matching)
+- `--glomap_config`: Path to GLOMAP INI configuration file (for mapper)
+
+**Optional:**
+- `--skip_undistortion`: Skip the image undistortion stage
+- `--skip_orientation`: Skip the orientation alignment stage
+- `--stage`: Run only a specific stage (choices: `feature_extraction`, `feature_matching`, `reconstruction`, `orientation_alignment`, `undistortion`, `model_analysis`)
+- `--from_stage`: Resume pipeline from a specific stage onwards
+- `--force_restart`: Clear all checkpoints and restart from the beginning
+- `--matcher_type`: Override matching type from config (choices: `exhaustive`, `sequential`, `vocab_tree`, `spatial`)
+
+#### Examples
+
+**Basic GLOMAP reconstruction:**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini
+```
+
+**Resume from reconstruction stage:**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --from_stage reconstruction
+```
+
+**Skip post-processing stages:**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --skip_undistortion \
+  --skip_orientation
+```
+
+#### GLOMAP Configuration
+
+The GLOMAP configuration file (`defaultGloMap.ini`) contains parameters specific to the GLOMAP mapper:
+
+**Key sections:**
+- `[Mapper]`: Core mapper settings (constraint types, iterations, skip flags)
+- `[ViewGraphCalib]`: View graph calibration thresholds
+- `[GlobalPositioning]`: Global positioning optimization and GPU settings
+- `[BundleAdjustment]`: Bundle adjustment parameters
+- `[Triangulation]`: Point triangulation settings
+- `[Thresholds]`: Various threshold parameters
+
+See [`configDocs.md`](configDocs.md) for detailed parameter documentation.
+
+#### When to Use GLOMAP vs COLMAP
+
+**Use GLOMAP when:**
+- **Speed is priority**: GLOMAP is significantly faster for large datasets
+- **Well-connected images**: Works best with good image connectivity
+- **Global optimization preferred**: Optimizes all cameras simultaneously
+- **GPU available**: Can leverage GPU for global positioning
+
+**Use COLMAP when:**
+- **Maximum accuracy needed**: Incremental approach can be more accurate
+- **Complex scenarios**: Better handles challenging image collections
+- **Incremental workflow**: Need to add images to existing reconstruction
+- **Memory constraints**: Incremental approach uses less memory
+
+#### Output Structure
+
+Same as COLMAP pipeline:
+
+```
+output_dir/
+├── database.db              # COLMAP database
+├── sparse/                  # GLOMAP reconstruction output
+│   ├── cameras.bin
+│   ├── images.bin
+│   └── points3D.bin
+├── oriented-model/          # Orientation-aligned model (if enabled)
+├── dense/                   # Undistorted images (if enabled)
+├── .checkpoint.json         # Pipeline checkpoint data
+└── glomap_pipeline.log      # Detailed execution log
+```
+
+**Note:** GLOMAP typically outputs directly to the `sparse/` directory rather than creating numbered subdirectories like COLMAP.
+
+## Configuration Documentation
+
+For detailed documentation of all COLMAP and GLOMAP configuration parameters, see [`configDocs.md`](configDocs.md). This includes:
+
+- Complete parameter descriptions
+- Default values and valid ranges
+- When and how to modify parameters
+- Configuration tips for common scenarios
+- Troubleshooting guidance
+
 ## Requirements
 
 ### System Requirements
 - Python 3.10+
 - [COLMAP](https://colmap.github.io/) (must be available in system PATH)
+- [GLOMAP](https://github.com/cvg/glomap) (optional, for GLOMAP pipeline)
 - NVIDIA GPU with CUDA 11.8+ (recommended for GPU acceleration)
 - 8GB+ RAM (16GB+ recommended for large datasets)
 
