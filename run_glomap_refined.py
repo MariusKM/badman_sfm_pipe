@@ -84,7 +84,9 @@ class INIConfigParser:
     """Parse INI configuration files (COLMAP or GLOMAP)."""
     
     def __init__(self, ini_path: Path):
-        self.config = configparser.ConfigParser()
+        self.config = configparser.RawConfigParser()
+        # Preserve case sensitivity in keys
+        self.config.optionxform = str
         
         # INI files may have global parameters before sections
         # Prepend [DEFAULT] section if needed
