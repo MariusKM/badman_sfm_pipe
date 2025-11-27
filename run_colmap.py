@@ -200,7 +200,7 @@ class ColmapPipeline:
         # Check COLMAP availability
         try:
             result = subprocess.run(['colmap', '-h'], 
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5, shell=True)
             if result.returncode != 0:
                 raise RuntimeError("COLMAP not found in PATH")
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -238,7 +238,8 @@ class ColmapPipeline:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                shell=True
             )
             
             output_lines = []

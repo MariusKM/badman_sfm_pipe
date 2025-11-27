@@ -203,7 +203,7 @@ class GloMapRefinedPipeline:
         # Check COLMAP availability
         try:
             result = subprocess.run(['colmap', '-h'], 
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5, shell=True)
             if result.returncode != 0:
                 raise RuntimeError("COLMAP not found in PATH")
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -213,7 +213,7 @@ class GloMapRefinedPipeline:
         # Check GLOMAP availability
         try:
             result = subprocess.run(['glomap', '-h'], 
-                                   capture_output=True, timeout=5)
+                                   capture_output=True, timeout=5, shell=True)
             if result.returncode != 0:
                 raise RuntimeError("GLOMAP not found in PATH")
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -251,7 +251,8 @@ class GloMapRefinedPipeline:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                shell=True
             )
             
             output_lines = []
