@@ -23,12 +23,11 @@ MANIFEST
 
 # Virtual environments
 venv/
-env/
+env/  # Local conda environment
 ENV/
 env.bak/
 venv.bak/
 .venv/
-badman_sfm/  # Conda environment if created locally
 .conda/
 
 # IDEs

@@ -14,8 +14,8 @@ then
     exit 1
 fi
 
-echo "Creating conda environment from environment.yml..."
-conda env create -f environment.yml
+echo "Creating local conda environment in ./env..."
+conda env create --prefix ./env -f environment.yml
 
 if [ $? -eq 0 ]; then
     echo ""
@@ -24,7 +24,7 @@ if [ $? -eq 0 ]; then
     echo "=================================="
     echo ""
     echo "To activate the environment, run:"
-    echo "  conda activate badman_sfm"
+    echo "  conda activate ./env"
     echo ""
     echo "To verify COLMAP is available:"
     echo "  colmap -h"

@@ -30,11 +30,11 @@ This project aims to provide flexible, customizable pipelines that combine the s
 git clone https://github.com/MariusKM/badman_sfm_pipe.git
 cd badman_sfm_pipe
 
-# Create conda environment
-conda env create -f environment.yml
+# Create local conda environment (in ./env directory)
+conda env create --prefix ./env -f environment.yml
 
 # Activate the environment
-conda activate badman_sfm
+conda activate ./env
 
 # Verify COLMAP is available
 colmap -h
@@ -61,7 +61,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-**Note:** Using conda is recommended for this project due to better GPU support and dependency management for deep learning libraries.
+**Note:** Using conda is recommended for this project due to better GPU support and dependency management for deep learning libraries. The conda environment will be created locally in the `./env` directory within the project.
 
 ## Usage
 

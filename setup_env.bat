@@ -14,8 +14,8 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo Creating conda environment from environment.yml...
-conda env create -f environment.yml
+echo Creating local conda environment in .\env...
+conda env create --prefix .\env -f environment.yml
 
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -24,7 +24,7 @@ if %ERRORLEVEL% EQU 0 (
     echo ==================================
     echo.
     echo To activate the environment, run:
-    echo   conda activate badman_sfm
+    echo   conda activate .\env
     echo.
     echo To verify COLMAP is available:
     echo   colmap -h
