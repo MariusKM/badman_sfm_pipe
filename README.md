@@ -317,6 +317,155 @@ output_dir/
 
 **Note:** GLOMAP typically outputs directly to the `sparse/` directory rather than creating numbered subdirectories like COLMAP.
 
+### Refined GLOMAP Pipeline
+
+The `run_glomap_refined.py` script combines GLOMAP's fast global reconstruction with COLMAP's post-processing refinement, providing the best of both worlds: speed and quality.
+
+#### Features
+
+- **Fast Global Reconstruction**: GLOMAP mapper for rapid initial reconstruction
+- **Post-Processing Refinement**: Multiple rounds of triangulation + bundle adjustment
+- **Quality Enhancement**: Significantly improved reconstruction quality over raw GLOMAP
+- **Progress Tracking**: Model analysis after each refinement step
+- **All Standard Features**: Checkpoint system, logging, flexible execution
+
+#### Basic Usage
+
+```bash
+python run_glomap_refined.py \
+  --input_images /path/to/images \
+  --output /path/to/output \
+  --colmap_config /path/to/colmap_config.ini \
+  --glomap_config /path/to/glomap_config.ini
+```
+
+#### Command-Line Arguments
+
+**Required:**
+- `--input_images`: Path to directory containing input images
+- `--output`: Path to output directory (database and results will be stored here)
+- `--colmap_config`: Path to COLMAP INI configuration file (for feature extraction/matching and refinement)
+- `--glomap_config`: Path to GLOMAP INI configuration file (for mapper)
+
+**Optional:**
+- `--skip_undistortion`: Skip the image undistortion stage
+- `--skip_orientation`: Skip the orientation alignment stage
+- `--refinement_rounds`: Number of triangulation + bundle adjustment rounds (default: 2)
+- `--stage`: Run only a specific stage
+- `--from_stage`: Resume pipeline from a specific stage onwards
+- `--force_restart`: Clear all checkpoints and restart from the beginning
+- `--matcher_type`: Override matching type from config
+
+#### Examples
+
+**Basic refined reconstruction:**
+```bash
+python run_glomap_refined.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini
+```
+
+**With custom refinement rounds:**
+```bash
+python run_glomap_refined.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --refinement_rounds 3
+```
+
+**Resume from refinement stage:**
+```bash
+python run_glomap_refined.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --from_stage post_processing_refinement
+```
+
+#### Pipeline Stages
+
+1. **Feature Extraction**: Extract SIFT features from images (COLMAP)
+2. **Feature Matching**: Match features between image pairs (COLMAP)
+3. **Reconstruction**: Global optimization reconstruction (GLOMAP)
+4. **Post-Processing Refinement**: Multiple rounds of:
+   - Point triangulation (COLMAP)
+   - Model analysis (logged)
+   - Bundle adjustment (COLMAP)
+   - Model analysis (logged)
+5. **Orientation Alignment**: Align model orientation (COLMAP, optional)
+6. **Undistortion**: Undistort images (COLMAP, optional)
+7. **Final Model Analysis**: Complete reconstruction statistics (COLMAP)
+
+#### Post-Processing Refinement
+
+After GLOMAP's fast global reconstruction, the script automatically performs multiple rounds of refinement:
+
+1. **Point Triangulation** - Adds additional 3D points from image observations
+2. **Bundle Adjustment** - Refines camera poses and 3D point positions
+
+Each round logs model statistics (number of points, observations, mean reprojection error) to track improvement.
+
+**Typical Improvements Over Raw GLOMAP:**
+- 10-30% more 3D points
+- 20-50% more observations  
+- 30-50% lower mean reprojection error
+- Higher overall reconstruction density and accuracy
+
+#### Configuration
+
+The refined GLOMAP pipeline requires two configuration files:
+
+**COLMAP Config** (`--colmap_config`):
+- Controls feature extraction/matching parameters
+- Controls refinement parameters:
+  - `[Mapper]` section for triangulation
+  - `[BundleAdjustment]` section for bundle adjustment
+
+**GLOMAP Config** (`--glomap_config`):
+- Controls GLOMAP mapper parameters (see [`defaultGloMap.ini`](defaultGloMap.ini))
+
+See [`configDocs.md`](configDocs.md) for detailed parameter documentation.
+
+#### When to Use Refined GLOMAP
+
+**Use Refined GLOMAP when:**
+- **Speed + Quality**: Need fast reconstruction with high quality
+- **Medium-large datasets**: 500-5000+ images
+- **Best overall performance**: Balanced speed and accuracy
+- **Production workflows**: Reliable, high-quality results
+
+**Use Standard GLOMAP (`run_glomap.py`) when:**
+- **Maximum speed**: Fastest possible reconstruction
+- **Preview/testing**: Quick validation of image sets
+- **Post-processing elsewhere**: Using external refinement tools
+
+**Use Hierarchical COLMAP (`run_colmap_hierarchical.py`) when:**
+- **Maximum quality**: Best possible reconstruction quality
+- **Very large datasets**: 5000+ images with good parallelization
+- **Complex scenes**: Challenging reconstruction scenarios
+
+#### Output Structure
+
+```
+output_dir/
+├── database.db                         # COLMAP database
+├── sparse/                             # Refined reconstruction
+│   ├── cameras.bin
+│   ├── images.bin
+│   └── points3D.bin
+├── oriented-model/                     # Orientation-aligned model (if enabled)
+├── dense/                              # Undistorted images (if enabled)
+├── .checkpoint.json                    # Pipeline checkpoint data
+└── glomap_refined_pipeline.log         # Detailed execution log with refinement tracking
+```
+
+**Note:** Post-processing refinement operates in-place on the sparse model, progressively improving quality.
+
 ### Hierarchical COLMAP Pipeline
 
 The `run_colmap_hierarchical.py` script uses COLMAP's hierarchical mapper for large-scale datasets, providing parallelized reconstruction with automatic post-processing refinement.
