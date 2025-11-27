@@ -17,13 +17,51 @@ This project aims to provide flexible, customizable pipelines that combine the s
 
 ## Installation
 
+### Prerequisites
+
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/download)
+- [COLMAP](https://colmap.github.io/) (must be available in system PATH)
+- NVIDIA GPU with CUDA support (recommended for deep learning features)
+
+### Setup
+
 ```bash
 # Clone the repository
 git clone https://github.com/MariusKM/badman_sfm_pipe.git
 cd badman_sfm_pipe
 
-# Installation instructions coming soon
+# Create conda environment
+conda env create -f environment.yml
+
+# Activate the environment
+conda activate badman_sfm
+
+# Verify COLMAP is available
+colmap -h
 ```
+
+**Windows users:** You can also use `setup_env.bat` to automate the environment creation.
+
+**Linux/Mac users:** You can also use `setup_env.sh` to automate the environment creation.
+
+### Alternative: Using pip
+
+If you prefer using pip with a virtual environment:
+
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate (Linux/Mac)
+source venv/bin/activate
+# Activate (Windows)
+venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+**Note:** Using conda is recommended for this project due to better GPU support and dependency management for deep learning libraries.
 
 ## Usage
 
@@ -164,9 +202,26 @@ Checkpoint data is stored in `.checkpoint.json` in the output directory.
 
 ## Requirements
 
-- Python 3.8+
+### System Requirements
+- Python 3.10+
 - [COLMAP](https://colmap.github.io/) (must be available in system PATH)
-- Individual library requirements will be documented as additional pipelines are added
+- NVIDIA GPU with CUDA 11.8+ (recommended for GPU acceleration)
+- 8GB+ RAM (16GB+ recommended for large datasets)
+
+### Python Dependencies
+The project uses conda for dependency management. Key dependencies include:
+
+- **Deep Learning:** PyTorch 2.0+, TorchVision
+- **Computer Vision:** OpenCV, scikit-image, Pillow
+- **Scientific Computing:** NumPy, SciPy, Pandas
+- **Utilities:** tqdm, matplotlib, h5py
+
+See `environment.yml` for the complete list of dependencies.
+
+### Future Integrations
+Additional dependencies will be added for:
+- [hloc](https://github.com/cvg/Hierarchical-Localization) - Hierarchical localization
+- [VGG-SFM](https://github.com/facebookresearch/vggsfm) - VGG Structure-from-Motion
 
 ## License
 

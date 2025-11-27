@@ -1,0 +1,56 @@
+name: badman_sfm
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.10
+  
+  # Deep Learning
+  - pytorch>=2.0.0
+  - torchvision>=0.15.0
+  - pytorch-cuda=11.8
+  
+  # Computer Vision & SFM
+  - numpy>=1.24.0
+  - opencv>=4.8.0
+  - pillow>=10.0.0
+  - scipy>=1.10.0
+  - matplotlib>=3.7.0
+  - imageio>=2.31.0
+  
+  # Scientific Computing
+  - pandas>=2.0.0
+  - scikit-learn>=1.3.0
+  - scikit-image>=0.21.0
+  
+  # Utilities
+  - tqdm>=4.65.0
+  - pyyaml>=6.0
+  - h5py>=3.9.0
+  
+  # Development Tools
+  - jupyter>=1.0.0
+  - ipython>=8.12.0
+  
+  # pip packages (will be installed via pip)
+  - pip>=23.0
+  - pip:
+    # COLMAP Python bindings (if available)
+    # - pycolmap>=0.4.0  # Uncomment when needed for hloc
+    
+    # Visualization
+    - plotly>=5.14.0
+    - seaborn>=0.12.0
+    
+    # Additional utilities
+    - kornia>=0.7.0  # Differentiable computer vision
+    - einops>=0.7.0  # Tensor operations
+    
+    # For future integrations
+    # hloc dependencies will be added when integrating
+    # VGG-SFM dependencies will be added when integrating
+

@@ -1,0 +1,42 @@
+# Core dependencies for badman_sfm_pipe
+# This file is supplementary to environment.yml
+
+# Computer Vision
+numpy>=1.24.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+scipy>=1.10.0
+matplotlib>=3.7.0
+imageio>=2.31.0
+
+# Deep Learning (use conda for better GPU support)
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Scientific Computing
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scikit-image>=0.21.0
+
+# Utilities
+tqdm>=4.65.0
+pyyaml>=6.0
+h5py>=3.9.0
+
+# Visualization
+plotly>=5.14.0
+seaborn>=0.12.0
+
+# Computer Vision Utilities
+kornia>=0.7.0
+einops>=0.7.0
+
+# Development
+jupyter>=1.0.0
+ipython>=8.12.0
+
+# Future integrations (uncomment when needed)
+# pycolmap>=0.4.0  # For hloc integration
+# plyfile>=0.8.0   # For point cloud processing
+# trimesh>=3.23.0  # For mesh processing
+
