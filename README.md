@@ -317,6 +317,155 @@ output_dir/
 
 **Note:** GLOMAP typically outputs directly to the `sparse/` directory rather than creating numbered subdirectories like COLMAP.
 
+### Hierarchical COLMAP Pipeline
+
+The `run_colmap_hierarchical.py` script uses COLMAP's hierarchical mapper for large-scale datasets, providing parallelized reconstruction with automatic post-processing refinement.
+
+#### Features
+
+- **Parallelized Reconstruction**: Scene partitioning with overlapping submodels
+- **Scalable**: Designed for datasets with 1000+ images
+- **Automatic Refinement**: Built-in post-processing with triangulation and bundle adjustment rounds
+- **Progress Tracking**: Model analysis after each refinement step to track improvements
+- **All Standard Features**: Checkpoint system, logging, flexible execution
+
+#### Basic Usage
+
+```bash
+python run_colmap_hierarchical.py \
+  --input_images /path/to/images \
+  --output /path/to/output \
+  --config /path/to/config.ini
+```
+
+#### Command-Line Arguments
+
+**Required:**
+- `--input_images`: Path to directory containing input images
+- `--output`: Path to output directory (database and results will be stored here)
+- `--config`: Path to COLMAP INI configuration file
+
+**Optional:**
+- `--skip_undistortion`: Skip the image undistortion stage
+- `--skip_orientation`: Skip the orientation alignment stage
+- `--num_workers`: Number of parallel workers (-1 for all cores, default: from config)
+- `--refinement_rounds`: Number of triangulation + bundle adjustment rounds (default: 2)
+- `--stage`: Run only a specific stage
+- `--from_stage`: Resume pipeline from a specific stage onwards
+- `--force_restart`: Clear all checkpoints and restart from the beginning
+- `--matcher_type`: Override matching type from config
+
+#### Examples
+
+**Basic hierarchical reconstruction:**
+```bash
+python run_colmap_hierarchical.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini
+```
+
+**With custom refinement rounds:**
+```bash
+python run_colmap_hierarchical.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini \
+  --refinement_rounds 3
+```
+
+**Limit parallel workers:**
+```bash
+python run_colmap_hierarchical.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini \
+  --num_workers 8
+```
+
+**Resume from refinement stage:**
+```bash
+python run_colmap_hierarchical.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini \
+  --from_stage post_processing_refinement
+```
+
+#### Pipeline Stages
+
+1. **Feature Extraction**: Extract SIFT features from images
+2. **Feature Matching**: Match features between image pairs
+3. **Hierarchical Reconstruction**: Parallel reconstruction with scene partitioning
+4. **Post-Processing Refinement**: Multiple rounds of:
+   - Point triangulation
+   - Model analysis (logged)
+   - Bundle adjustment
+   - Model analysis (logged)
+5. **Orientation Alignment**: Align model orientation (optional)
+6. **Undistortion**: Undistort images (optional)
+7. **Final Model Analysis**: Complete reconstruction statistics
+
+#### Post-Processing Refinement
+
+The hierarchical mapper creates a merged model from submodels that requires refinement to achieve optimal quality. The script automatically performs multiple rounds of:
+
+1. **Point Triangulation** - Adds additional 3D points from image observations
+2. **Bundle Adjustment** - Refines camera poses and 3D point positions
+
+Each round logs model statistics (number of points, observations, mean reprojection error) to track improvement.
+
+**Typical Improvements:**
+- 10-30% more 3D points
+- 20-50% more observations
+- 30-50% lower mean reprojection error
+
+#### Configuration
+
+The hierarchical mapper uses the standard `defaultColMap.ini` with an additional section:
+
+```ini
+[HierarchicalMapper]
+num_workers=-1              # Use all CPU cores
+image_overlap=50            # Images overlap between submodels
+leaf_max_num_images=500     # Max images per submodel
+```
+
+See [`configDocs.md`](configDocs.md) for detailed parameter documentation.
+
+#### When to Use Hierarchical Mapper
+
+**Use Hierarchical Mapper when:**
+- **Large datasets**: 1000+ images
+- **Parallel processing**: Multiple CPU cores available
+- **Well-connected images**: Good overlap between images
+- **Speed priority**: Faster than incremental for large sets
+
+**Use Standard Mapper (`run_colmap.py`) when:**
+- **Small-medium datasets**: < 1000 images
+- **Complex scenarios**: Challenging image collections
+- **Memory constrained**: Limited RAM
+- **Incremental workflow**: Adding images to existing reconstruction
+
+#### Output Structure
+
+Same as standard COLMAP pipeline:
+
+```
+output_dir/
+├── database.db                    # COLMAP database
+├── sparse/                        # Hierarchical reconstruction output
+│   ├── cameras.bin
+│   ├── images.bin
+│   └── points3D.bin
+├── oriented-model/                # Orientation-aligned model (if enabled)
+├── dense/                         # Undistorted images (if enabled)
+├── .checkpoint.json               # Pipeline checkpoint data
+└── colmap_hierarchical_pipeline.log  # Detailed execution log with refinement tracking
+```
+
+**Note:** Hierarchical mapper outputs directly to the `sparse/` directory (no numbered subdirectories).
+
 ## Configuration Documentation
 
 For detailed documentation of all COLMAP and GLOMAP configuration parameters, see [`configDocs.md`](configDocs.md). This includes:

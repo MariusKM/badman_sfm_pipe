@@ -474,6 +474,48 @@ Incremental reconstruction parameters.
 
 ---
 
+### [HierarchicalMapper]
+
+Hierarchical mapper settings for large-scale reconstructions.
+
+#### `num_workers`
+- **Type**: Integer
+- **Default**: -1
+- **Description**: Number of parallel workers for hierarchical reconstruction (-1 uses all available cores)
+- **When to modify**: 
+  - Set to specific number to limit CPU usage
+  - Reduce if memory constrained
+  - Increase parallel processing speed for large datasets
+
+#### `image_overlap`
+- **Type**: Integer
+- **Default**: 50
+- **Description**: Number of overlapping images between adjacent submodels
+- **When to modify**:
+  - Increase (70-100) for better submodel connectivity and merging
+  - Decrease (30-40) for faster processing with well-connected datasets
+  - Higher values improve robustness but increase computation
+
+#### `leaf_max_num_images`
+- **Type**: Integer
+- **Default**: 500
+- **Description**: Maximum number of images per leaf submodel
+- **When to modify**:
+  - Decrease (200-300) for systems with limited memory
+  - Increase (700-1000) for powerful systems to reduce overhead
+  - Balance between parallelization and submodel size
+
+**When to use Hierarchical Mapper:**
+- Datasets with 1000+ images
+- Need for parallelized reconstruction
+- Well-connected image sets
+- Sufficient system memory and CPU cores
+
+**Post-Processing:**
+The hierarchical mapper requires additional refinement rounds of point triangulation and bundle adjustment to achieve optimal results. Use `run_colmap_hierarchical.py` which includes automated post-processing.
+
+---
+
 ## GLOMAP Configuration (`defaultGloMap.ini`)
 
 GLOMAP uses a global optimization approach for faster reconstruction compared to COLMAP's incremental approach.
