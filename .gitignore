@@ -68,6 +68,7 @@ database.db
 *.pt
 *.ckpt
 *.weights
+data/
 datasets/
 models/
 checkpoints/
