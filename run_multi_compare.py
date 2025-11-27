@@ -316,10 +316,10 @@ class ComparisonReporter:
                        glomap_config: Path, refinement_rounds: int):
         """Generate comprehensive markdown comparison report."""
         
-        # Count total images
+        # Count total images (including subdirectories)
         image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
-        total_images = len([f for f in input_images.iterdir() 
-                           if f.suffix.lower() in image_exts])
+        all_files = list(input_images.rglob('*'))
+        total_images = len([f for f in all_files if f.is_file() and f.suffix.lower() in image_exts])
         
         # Generate report
         report = []

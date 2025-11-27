@@ -213,15 +213,15 @@ class ColmapPipeline:
                     level='error')
             sys.exit(1)
         
-        # Count images
+        # Count images (including subdirectories)
         image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
-        images = [f for f in self.input_images.iterdir() 
-                 if f.suffix.lower() in image_exts]
+        images = list(self.input_images.rglob('*'))
+        images = [f for f in images if f.is_file() and f.suffix.lower() in image_exts]
         if not images:
-            self.log(f"No images found in {self.input_images}", level='error')
+            self.log(f"No images found in {self.input_images} (including subdirectories)", level='error')
             sys.exit(1)
         
-        self.log(f"Found {len(images)} images in input directory")
+        self.log(f"Found {len(images)} images in input directory (including subdirectories)")
         
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
