@@ -615,6 +615,159 @@ output_dir/
 
 **Note:** Hierarchical mapper outputs directly to the `sparse/` directory (no numbered subdirectories).
 
+## Multi-Pipeline Comparison
+
+The `run_multi_compare.py` script allows you to run and compare multiple SFM pipelines on the same dataset, generating a comprehensive report with speed and quality metrics.
+
+### Features
+
+- **Multiple Pipeline Support**: Compare COLMAP, GLOMAP, Hierarchical COLMAP, and Refined GLOMAP
+- **Comprehensive Metrics**: Speed, quality, and efficiency measurements
+- **Detailed Reports**: Markdown format with tables, analysis, and recommendations
+- **Flexible Selection**: Run all pipelines or select specific ones
+- **Sequential Execution**: Safe, reliable processing with progress tracking
+
+### Basic Usage
+
+```bash
+python run_multi_compare.py \
+  --input_images /path/to/images \
+  --output /path/to/comparison_output \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --comparison_log ./comparison_report.md
+```
+
+### Command-Line Arguments
+
+**Required:**
+- `--input_images`: Path to directory containing input images
+- `--output`: Path to output directory (subdirectories created per pipeline)
+- `--colmap_config`: Path to COLMAP INI configuration file
+- `--glomap_config`: Path to GLOMAP INI configuration file
+- `--comparison_log`: Path to comparison report file (markdown format)
+
+**Optional:**
+- `--pipelines`: Which pipelines to run (choices: `colmap`, `glomap`, `hierarchical`, `refined`, `all`)
+  - Default: `all`
+  - Can specify multiple: `--pipelines colmap glomap`
+- `--refinement_rounds`: Number of refinement rounds for hierarchical/refined (default: 2)
+- `--skip_undistortion`: Skip undistortion stage for all pipelines
+- `--skip_orientation`: Skip orientation alignment for all pipelines
+- `--matcher_type`: Override matching type for all pipelines
+
+### Examples
+
+**Compare all pipelines:**
+```bash
+python run_multi_compare.py \
+  --input_images ./my_images \
+  --output ./comparison \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --comparison_log ./report.md
+```
+
+**Compare only COLMAP and GLOMAP:**
+```bash
+python run_multi_compare.py \
+  --input_images ./my_images \
+  --output ./comparison \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --comparison_log ./report.md \
+  --pipelines colmap glomap
+```
+
+**Fast comparison (skip undistortion and orientation):**
+```bash
+python run_multi_compare.py \
+  --input_images ./my_images \
+  --output ./comparison \
+  --colmap_config ./defaultColMap.ini \
+  --glomap_config ./defaultGloMap.ini \
+  --comparison_log ./report.md \
+  --skip_undistortion \
+  --skip_orientation
+```
+
+### Metrics Tracked
+
+**Speed Metrics:**
+- Total execution time (seconds)
+- Per-stage timing breakdown (feature extraction, matching, reconstruction, etc.)
+- Time per registered image (efficiency metric)
+- Time per 3D point (efficiency metric)
+- Speed comparison ratios
+
+**Quality Metrics:**
+- Number of registered images
+- Registration ratio (percentage of images successfully registered)
+- Number of 3D points
+- Number of observations
+- Observations per point (reconstruction density)
+- Mean track length (multi-view consistency)
+- **Mean reprojection error** (most important quality metric, in pixels)
+- Points per registered image
+- Observations per registered image
+
+**Composite Metric:**
+- Quality Score (0-10 scale) combining:
+  - Registration ratio (20% weight)
+  - Reprojection error (40% weight)
+  - Point density (20% weight)
+  - Observations per point (20% weight)
+
+### Report Contents
+
+The generated markdown report includes:
+
+1. **Summary Table**: Quick overview of all pipelines with key metrics
+2. **Speed Analysis**: 
+   - Fastest/slowest pipelines
+   - Time efficiency comparisons
+   - Per-stage timing breakdown
+3. **Quality Analysis**:
+   - Best registration coverage
+   - Most 3D points
+   - Best reprojection accuracy
+   - Quality score comparison
+4. **Recommendations**: Data-driven suggestions based on results
+5. **Detailed Results**: Complete statistics for each pipeline
+
+### Output Structure
+
+```
+output_dir/
+├── colmap/                     # COLMAP pipeline output
+│   ├── database.db
+│   ├── sparse/
+│   ├── .checkpoint.json
+│   └── colmap_pipeline.log
+├── glomap/                     # GLOMAP pipeline output
+│   └── ...
+├── hierarchical/               # Hierarchical COLMAP output
+│   └── ...
+├── refined/                    # Refined GLOMAP output
+│   └── ...
+└── comparison_report.md        # Comparison report
+```
+
+### Use Cases
+
+**When to Use Multi-Comparison:**
+- **Pipeline Selection**: Determine best pipeline for your specific dataset
+- **Performance Benchmarking**: Compare speed vs quality tradeoffs
+- **Configuration Tuning**: Test different settings across pipelines
+- **Research & Development**: Systematic evaluation of SFM methods
+- **Production Planning**: Make informed decisions for deployment
+
+**Example Workflow:**
+1. Run comparison on a representative subset of your data
+2. Review the report to understand speed/quality tradeoffs
+3. Select the best pipeline for your requirements
+4. Process your full dataset with the chosen pipeline
+
 ## Configuration Documentation
 
 For detailed documentation of all COLMAP and GLOMAP configuration parameters, see [`configDocs.md`](configDocs.md). This includes:
