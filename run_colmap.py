@@ -414,8 +414,8 @@ class ColmapPipeline:
         ]
         
         # Add config arguments
+        # Note: Mapper uses Mapper.ba_* parameters, not BundleAdjustment.* parameters
         cmd.extend(self.config.get_section_args('Mapper'))
-        cmd.extend(self.config.get_section_args('BundleAdjustment'))
         
         success, output = self.run_command(cmd, stage)
         
