@@ -73,6 +73,9 @@ datasets/
 models/
 checkpoints/
 
+# Examples and test data
+examples/
+
 # Logs
 *.log
 logs/
