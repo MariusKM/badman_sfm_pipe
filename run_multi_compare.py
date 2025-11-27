@@ -174,13 +174,17 @@ class PipelineRunner:
         cmd = [
             sys.executable, script,
             '--input_images', str(self.input_images),
-            '--output', str(output_dir),
-            '--colmap_config', str(self.colmap_config)
+            '--output', str(output_dir)
         ]
         
-        # Add GLOMAP config for GLOMAP-based pipelines
+        # Add config arguments based on pipeline type
         if pipeline_name in ['glomap', 'refined']:
+            # GLOMAP-based pipelines use both configs
+            cmd.extend(['--colmap_config', str(self.colmap_config)])
             cmd.extend(['--glomap_config', str(self.glomap_config)])
+        else:
+            # COLMAP and hierarchical use --config
+            cmd.extend(['--config', str(self.colmap_config)])
         
         # Add optional arguments
         if self.args.skip_undistortion:
