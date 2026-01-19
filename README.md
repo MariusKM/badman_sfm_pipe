@@ -63,6 +63,100 @@ pip install -r requirements.txt
 
 **Note:** Using conda is recommended for this project due to better GPU support and dependency management for deep learning libraries. The conda environment will be created locally in the `./env` directory within the project.
 
+### VGGSfM Installation
+
+VGGSfM is integrated as a git submodule with its own dedicated conda environment to avoid dependency conflicts.
+
+#### Prerequisites
+
+- All prerequisites listed above
+- Git (for submodule management)
+- CUDA 12.1 compatible GPU (recommended)
+
+#### Setup VGGSfM Environment
+
+**Windows:**
+```bash
+# Setup VGGSfM conda environment
+.\setup_vggsfm_env.bat
+
+# Activate the VGGSfM environment
+conda activate .\vggsfm_env
+
+# Install VGGSfM and dependencies
+.\install_vggsfm.bat
+
+# Verify installation
+python -c "import vggsfm; print('VGGSfM imported successfully')"
+```
+
+**Linux/Mac:**
+```bash
+# Setup VGGSfM conda environment
+bash setup_vggsfm_env.sh
+
+# Activate the VGGSfM environment
+conda activate ./vggsfm_env
+
+# Install VGGSfM and dependencies
+cd vggsfm
+bash install.sh
+python -m pip install -e .
+cd ..
+
+# Verify installation
+python -c "import vggsfm; print('VGGSfM imported successfully')"
+```
+
+#### VGGSfM Environment Details
+
+The VGGSfM environment (`vggsfm_env/`) includes:
+- Python 3.10
+- PyTorch 2.1 with CUDA 12.1
+- VGGSfM v2.0 and all core dependencies
+- LightGlue (feature matching)
+- pycolmap (COLMAP Python bindings)
+- poselib (pose estimation)
+- visdom (visualization)
+
+**Note:** PyTorch3D is optional and only needed for advanced visdom visualization (`cfg.viz_visualize=True`). The current installation skips it to avoid platform-specific compilation issues. VGGSfM works perfectly without it for all core functionality.
+
+#### Updating VGGSfM
+
+Since VGGSfM is a git submodule, you can update it:
+
+```bash
+# Update to latest version
+git submodule update --remote vggsfm
+
+# Or update all submodules
+git submodule update --remote
+```
+
+#### Using VGGSfM
+
+VGGSfM demo examples:
+
+```bash
+# Activate VGGSfM environment
+conda activate ./vggsfm_env
+
+# Run on your images
+cd vggsfm
+python demo.py SCENE_DIR=/path/to/your/images
+
+# With specific camera type
+python demo.py SCENE_DIR=/path/to/your/images camera_type=SIMPLE_RADIAL
+
+# With visualization
+python demo.py SCENE_DIR=/path/to/your/images gr_visualize=True
+
+# Generate denser point cloud
+python demo.py SCENE_DIR=/path/to/your/images extra_pt_pixel_interval=10 concat_extra_points=True
+```
+
+For more details, see the [VGGSfM README](vggsfm/README.md) and [VGGSfM documentation](https://github.com/facebookresearch/vggsfm).
+
 ## Usage
 
 ### COLMAP Pipeline

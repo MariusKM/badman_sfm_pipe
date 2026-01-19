@@ -154,11 +154,10 @@ class PipelineRunner:
     }
     
     def __init__(self, input_images: Path, output_base: Path, 
-                 colmap_config: Path, glomap_config: Path, args):
+                 colmap_config: Path, args):
         self.input_images = input_images
         self.output_base = output_base
         self.colmap_config = colmap_config
-        self.glomap_config = glomap_config
         self.args = args
     
     def run_pipeline(self, pipeline_name: str) -> Tuple[bool, Dict, Dict]:
@@ -180,9 +179,8 @@ class PipelineRunner:
         
         # Add config arguments based on pipeline type
         if pipeline_name in ['glomap', 'refined']:
-            # GLOMAP-based pipelines use both configs
+            # GLOMAP-based pipelines only need colmap_config
             cmd.extend(['--colmap_config', str(self.colmap_config)])
-            cmd.extend(['--glomap_config', str(self.glomap_config)])
         else:
             # COLMAP and hierarchical use --config
             cmd.extend(['--config', str(self.colmap_config)])
@@ -313,7 +311,7 @@ class ComparisonReporter:
         }
     
     def generate_report(self, input_images: Path, colmap_config: Path, 
-                       glomap_config: Path, refinement_rounds: int):
+                       refinement_rounds: int):
         """Generate comprehensive markdown comparison report."""
         
         # Count total images (including subdirectories)
@@ -328,7 +326,6 @@ class ComparisonReporter:
         report.append(f"**Dataset:** {input_images} ({total_images} images)\n")
         report.append(f"**Configuration:**")
         report.append(f"- COLMAP Config: {colmap_config.name}")
-        report.append(f"- GLOMAP Config: {glomap_config.name}")
         report.append(f"- Refinement Rounds: {refinement_rounds}\n")
         
         # Summary table
@@ -571,8 +568,6 @@ def main():
                        help='Path to output directory (subdirs created per pipeline)')
     parser.add_argument('--colmap_config', required=True,
                        help='Path to COLMAP INI configuration file')
-    parser.add_argument('--glomap_config', required=True,
-                       help='Path to GLOMAP INI configuration file')
     parser.add_argument('--comparison_log', required=True,
                        help='Path to comparison log file (markdown format)')
     
@@ -599,7 +594,6 @@ def main():
     input_images = Path(args.input_images).resolve()
     output_base = Path(args.output).resolve()
     colmap_config = Path(args.colmap_config).resolve()
-    glomap_config = Path(args.glomap_config).resolve()
     comparison_log = Path(args.comparison_log).resolve()
     
     # Validate inputs
@@ -608,9 +602,6 @@ def main():
         sys.exit(1)
     if not colmap_config.exists():
         print(f"Error: COLMAP config not found: {colmap_config}")
-        sys.exit(1)
-    if not glomap_config.exists():
-        print(f"Error: GLOMAP config not found: {glomap_config}")
         sys.exit(1)
     
     # Create output directory
@@ -632,7 +623,7 @@ def main():
     print("="*60)
     
     # Initialize runner and reporter
-    runner = PipelineRunner(input_images, output_base, colmap_config, glomap_config, args)
+    runner = PipelineRunner(input_images, output_base, colmap_config, args)
     reporter = ComparisonReporter(comparison_log)
     calculator = MetricsCalculator()
     
@@ -653,7 +644,7 @@ def main():
     print(f"\n{'='*60}")
     print("Generating comparison report...")
     print(f"{'='*60}")
-    reporter.generate_report(input_images, colmap_config, glomap_config, args.refinement_rounds)
+    reporter.generate_report(input_images, colmap_config, args.refinement_rounds)
     
     print(f"\n{'='*60}")
     print("COMPARISON COMPLETE")

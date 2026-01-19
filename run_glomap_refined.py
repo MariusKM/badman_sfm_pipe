@@ -155,7 +155,6 @@ class GloMapRefinedPipeline:
         self.input_images = Path(args.input_images).resolve()
         self.output_dir = Path(args.output).resolve()
         self.colmap_config = INIConfigParser(Path(args.colmap_config))
-        self.glomap_config = INIConfigParser(Path(args.glomap_config))
         
         # Setup paths
         self.db_path = self.output_dir / "database.db"
@@ -260,13 +259,18 @@ class GloMapRefinedPipeline:
             output_lines = []
             for line in process.stdout:
                 line = line.strip()
-                # Filter relevant lines
-                if any(keyword in line.lower() for keyword in 
-                      ['error', 'warning', 'images', 'matches', 'points', 
-                       'registered', 'features', 'extracted', 'processing',
-                       'observations', 'reprojection']):
+                # TEMPORARY DEBUG: For reconstruction stage, capture ALL output
+                if stage == 'reconstruction':
                     output_lines.append(line)
-                    self.log(line, stage=stage)
+                    self.log(f"[GLOMAP OUTPUT] {line}", stage=stage)
+                else:
+                    # Filter relevant lines for other stages
+                    if any(keyword in line.lower() for keyword in 
+                          ['error', 'warning', 'images', 'matches', 'points', 
+                           'registered', 'features', 'extracted', 'processing',
+                           'observations', 'reprojection']):
+                        output_lines.append(line)
+                        self.log(line, stage=stage)
             
             process.wait()
             
@@ -441,18 +445,13 @@ class GloMapRefinedPipeline:
             'glomap', 'mapper',
             '--database_path', str(self.db_path),
             '--image_path', str(self.input_images),
-            '--output_path', str(self.sparse_dir)
+            '--output_path', str(self.sparse_dir),
+            # Essential GLOMAP arguments
+            '--skip_pruning', '0',
+            '--TrackEstablishment.max_num_tracks', '-1',
+            '--BundleAdjustment.use_gpu', '1',
+            '--GlobalPositioning.use_gpu', '1'
         ]
-        
-        # Add config arguments from GLOMAP config
-        cmd.extend(self.glomap_config.get_section_args('Mapper'))
-        cmd.extend(self.glomap_config.get_section_args('ViewGraphCalib'))
-        cmd.extend(self.glomap_config.get_section_args('RelPoseEstimation'))
-        cmd.extend(self.glomap_config.get_section_args('TrackEstablishment'))
-        cmd.extend(self.glomap_config.get_section_args('GlobalPositioning'))
-        cmd.extend(self.glomap_config.get_section_args('BundleAdjustment'))
-        cmd.extend(self.glomap_config.get_section_args('Triangulation'))
-        cmd.extend(self.glomap_config.get_section_args('Thresholds'))
         
         success, output = self.run_command(cmd, stage)
         
@@ -707,7 +706,6 @@ class GloMapRefinedPipeline:
         self.log(f"Input images: {self.input_images}")
         self.log(f"Output directory: {self.output_dir}")
         self.log(f"COLMAP config: {self.args.colmap_config}")
-        self.log(f"GLOMAP config: {self.args.glomap_config}")
         self.log(f"Refinement rounds: {self.args.refinement_rounds}")
         
         # Validate environment
@@ -770,8 +768,6 @@ def main():
                        help='Path to output directory for database and results')
     parser.add_argument('--colmap_config', required=True,
                        help='Path to COLMAP INI configuration file (for feature extraction/matching)')
-    parser.add_argument('--glomap_config', required=True,
-                       help='Path to GLOMAP INI configuration file (for mapper)')
     
     # Optional flags
     parser.add_argument('--skip_undistortion', action='store_true',
