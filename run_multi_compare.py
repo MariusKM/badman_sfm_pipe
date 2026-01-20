@@ -39,8 +39,7 @@ class ModelAnalyzer:
                 ['colmap', 'model_analyzer', '--path', str(self.model_path)],
                 capture_output=True,
                 text=True,
-                timeout=60,
-                shell=True
+                timeout=60
             )
             
             if result.returncode != 0:

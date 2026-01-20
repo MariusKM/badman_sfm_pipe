@@ -106,11 +106,15 @@ class INIConfigParser:
             return args
         
         for key, value in self.config[section].items():
-            # Skip certain global parameters
-            if key in ['database_path', 'image_path', 'log_to_stderr', 'log_level', 
-                      'default_random_seed']:
+            # Skip certain global parameters and vocab tree params (set via command-line)
+            if key in ['database_path', 'image_path', 'log_to_stderr', 'log_level',
+                      'default_random_seed', 'vocab_tree_path', 'num_images']:
                 continue
-            
+
+            # Skip empty values
+            if not value or not value.strip():
+                continue
+
             # Convert INI key to COLMAP argument format
             arg_name = f"--{section}.{key}"
             
@@ -201,8 +205,8 @@ class ColmapPipeline:
         
         # Check COLMAP availability
         try:
-            result = subprocess.run(['colmap', '-h'], 
-                                   capture_output=True, timeout=5, shell=True)
+            result = subprocess.run(['colmap', '-h'],
+                                   capture_output=True, timeout=5)
             if result.returncode != 0:
                 raise RuntimeError("COLMAP not found in PATH")
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -240,17 +244,13 @@ class ColmapPipeline:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1,
-                shell=True
+                bufsize=1
             )
             
             output_lines = []
             for line in process.stdout:
                 line = line.strip()
-                # Filter relevant lines
-                if any(keyword in line.lower() for keyword in 
-                      ['error', 'warning', 'images', 'matches', 'points', 
-                       'registered', 'features', 'extracted', 'processing']):
+                if line:  # Log all non-empty output
                     output_lines.append(line)
                     self.log(line, stage=stage)
             
@@ -349,6 +349,18 @@ class ColmapPipeline:
             cmd.extend(self.config.get_section_args('SequentialMatching'))
         elif matcher_type == 'vocab_tree':
             cmd.extend(self.config.get_section_args('VocabTreeMatching'))
+            # Add vocabulary tree path (required for vocab_tree matcher)
+            if self.args.vocab_tree_path:
+                vocab_tree = Path(self.args.vocab_tree_path).resolve()
+                if not vocab_tree.exists():
+                    self.log(f"Vocabulary tree file not found: {vocab_tree}", level='error', stage=stage)
+                    return False
+                cmd.extend(['--VocabTreeMatching.vocab_tree_path', str(vocab_tree)])
+                cmd.extend(['--VocabTreeMatching.num_images', str(self.args.vocab_tree_num_images)])
+                self.log(f"Using vocabulary tree: {vocab_tree}", stage=stage)
+            else:
+                self.log("Warning: vocab_tree matcher selected but --vocab_tree_path not provided",
+                        level='warning', stage=stage)
         elif matcher_type == 'spatial':
             cmd.extend(self.config.get_section_args('SpatialMatching'))
         
@@ -646,10 +658,16 @@ def main():
                        help='Clear all checkpoints and restart from beginning')
     
     # Matcher type
-    parser.add_argument('--matcher_type', 
+    parser.add_argument('--matcher_type',
                        choices=['exhaustive', 'sequential', 'vocab_tree', 'spatial'],
                        help='Override matching type from config')
-    
+
+    # Vocabulary tree options
+    parser.add_argument('--vocab_tree_path',
+                       help='Path to vocabulary tree file (required for vocab_tree matcher)')
+    parser.add_argument('--vocab_tree_num_images', type=int, default=100,
+                       help='Number of images to retrieve for vocab tree matching (default: 100)')
+
     args = parser.parse_args()
     
     # Run pipeline

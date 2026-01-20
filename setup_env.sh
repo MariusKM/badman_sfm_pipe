@@ -5,13 +5,26 @@ echo "=================================="
 echo "Badman SFM Pipeline - Environment Setup"
 echo "=================================="
 
-# Check if conda is installed
-if ! command -v conda &> /dev/null
-then
-    echo "Error: conda is not installed or not in PATH"
-    echo "Please install Miniconda or Anaconda first:"
-    echo "https://docs.conda.io/en/latest/miniconda.html"
-    exit 1
+# Check if conda is installed, install if not
+if ! command -v conda &> /dev/null; then
+    echo "Conda not found. Installing Miniconda..."
+
+    # Download Miniconda installer
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+    MINICONDA_INSTALLER="/tmp/miniconda.sh"
+
+    wget -q --show-progress "$MINICONDA_URL" -O "$MINICONDA_INSTALLER"
+
+    # Install Miniconda
+    bash "$MINICONDA_INSTALLER" -b -p "$HOME/miniconda3"
+    rm "$MINICONDA_INSTALLER"
+
+    # Initialize conda
+    eval "$("$HOME/miniconda3/bin/conda" shell.bash hook)"
+    "$HOME/miniconda3/bin/conda" init bash
+
+    echo "Miniconda installed successfully!"
+    echo ""
 fi
 
 echo "Creating local conda environment in ./env..."
