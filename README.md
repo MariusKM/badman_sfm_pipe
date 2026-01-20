@@ -9,7 +9,6 @@ This repository provides custom pipelines for:
 - **[COLMAP](https://colmap.github.io/)** - General-purpose Structure-from-Motion and Multi-View Stereo
 - **[GLOMAP](https://github.com/cvg/glomap)** - Global Structure-from-Motion
 - **[hloc](https://github.com/cvg/Hierarchical-Localization)** - Hierarchical Localization toolbox
-- **[VGG-SFM](https://github.com/facebookresearch/vggsfm)** - Visual Geometry Group's SFM implementation
 
 ## Overview
 
@@ -63,101 +62,46 @@ pip install -r requirements.txt
 
 **Note:** Using conda is recommended for this project due to better GPU support and dependency management for deep learning libraries. The conda environment will be created locally in the `./env` directory within the project.
 
-### VGGSfM Installation
-
-VGGSfM is integrated as a git submodule with its own dedicated conda environment to avoid dependency conflicts.
-
-#### Prerequisites
-
-- All prerequisites listed above
-- Git (for submodule management)
-- CUDA 12.1 compatible GPU (recommended)
-
-#### Setup VGGSfM Environment
-
-**Windows:**
-```bash
-# Setup VGGSfM conda environment
-.\setup_vggsfm_env.bat
-
-# Activate the VGGSfM environment
-conda activate .\vggsfm_env
-
-# Install VGGSfM and dependencies
-.\install_vggsfm.bat
-
-# Verify installation
-python -c "import vggsfm; print('VGGSfM imported successfully')"
-```
-
-**Linux/Mac:**
-```bash
-# Setup VGGSfM conda environment
-bash setup_vggsfm_env.sh
-
-# Activate the VGGSfM environment
-conda activate ./vggsfm_env
-
-# Install VGGSfM and dependencies
-cd vggsfm
-bash install.sh
-python -m pip install -e .
-cd ..
-
-# Verify installation
-python -c "import vggsfm; print('VGGSfM imported successfully')"
-```
-
-#### VGGSfM Environment Details
-
-The VGGSfM environment (`vggsfm_env/`) includes:
-- Python 3.10
-- PyTorch 2.1 with CUDA 12.1
-- VGGSfM v2.0 and all core dependencies
-- LightGlue (feature matching)
-- pycolmap (COLMAP Python bindings)
-- poselib (pose estimation)
-- visdom (visualization)
-
-**Note:** PyTorch3D is optional and only needed for advanced visdom visualization (`cfg.viz_visualize=True`). The current installation skips it to avoid platform-specific compilation issues. VGGSfM works perfectly without it for all core functionality.
-
-#### Updating VGGSfM
-
-Since VGGSfM is a git submodule, you can update it:
-
-```bash
-# Update to latest version
-git submodule update --remote vggsfm
-
-# Or update all submodules
-git submodule update --remote
-```
-
-#### Using VGGSfM
-
-VGGSfM demo examples:
-
-```bash
-# Activate VGGSfM environment
-conda activate ./vggsfm_env
-
-# Run on your images
-cd vggsfm
-python demo.py SCENE_DIR=/path/to/your/images
-
-# With specific camera type
-python demo.py SCENE_DIR=/path/to/your/images camera_type=SIMPLE_RADIAL
-
-# With visualization
-python demo.py SCENE_DIR=/path/to/your/images gr_visualize=True
-
-# Generate denser point cloud
-python demo.py SCENE_DIR=/path/to/your/images extra_pt_pixel_interval=10 concat_extra_points=True
-```
-
-For more details, see the [VGGSfM README](vggsfm/README.md) and [VGGSfM documentation](https://github.com/facebookresearch/vggsfm).
-
 ## Usage
+
+### Vocabulary Tree Matching (Large Datasets)
+
+For datasets with 1000+ images, vocabulary tree matching is **strongly recommended** over exhaustive matching. It's much faster and scales well to large datasets.
+
+#### Downloading the Vocabulary Tree
+
+**IMPORTANT:** COLMAP 3.13+ requires FAISS-based vocabulary trees. Download the correct version:
+
+```bash
+# Download FAISS vocab tree for COLMAP 3.13+
+wget https://github.com/colmap/colmap/releases/download/3.11.1/vocab_tree_faiss_flickr100K_words256K.bin
+```
+
+**Note:** Older vocabulary trees (without "faiss" in the name) will cause COLMAP to crash with SIGABRT (-6).
+
+#### Recommended `num_images` Values
+
+The `--vocab_tree_num_images` parameter controls how many similar images to match against each image:
+
+| Dataset Size | Recommended `num_images` |
+|--------------|--------------------------|
+| ~1000 images | 50-100 |
+| ~5000 images | 150-200 |
+| ~10000+ images | 200-300 |
+
+Higher values give better reconstruction quality but increase matching time.
+
+#### Example Usage
+
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --matcher_type vocab_tree \
+  --vocab_tree_path ./vocab_tree_faiss_flickr100K_words256K.bin \
+  --vocab_tree_num_images 200
+```
 
 ### COLMAP Pipeline
 
@@ -196,6 +140,8 @@ python run_colmap.py \
 - `--from_stage`: Resume pipeline from a specific stage onwards
 - `--force_restart`: Clear all checkpoints and restart from the beginning
 - `--matcher_type`: Override matching type from config (choices: `exhaustive`, `sequential`, `vocab_tree`, `spatial`)
+- `--vocab_tree_path`: Path to vocabulary tree file (required for `vocab_tree` matcher)
+- `--vocab_tree_num_images`: Number of nearest images to match per image (default: 100)
 
 #### Examples
 
@@ -242,6 +188,17 @@ python run_colmap.py \
   --output ./output \
   --config ./colmap_config.ini \
   --matcher_type sequential
+```
+
+**Use vocabulary tree matching (recommended for 1000+ images):**
+```bash
+python run_colmap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./colmap_config.ini \
+  --matcher_type vocab_tree \
+  --vocab_tree_path ./vocab_tree_faiss_flickr100K_words256K.bin \
+  --vocab_tree_num_images 200
 ```
 
 **Force restart entire pipeline:**
@@ -312,8 +269,7 @@ The `run_glomap.py` script provides a hybrid SFM pipeline that combines COLMAP's
 python run_glomap.py \
   --input_images /path/to/images \
   --output /path/to/output \
-  --colmap_config /path/to/colmap_config.ini \
-  --glomap_config /path/to/glomap_config.ini
+  --colmap_config /path/to/colmap_config.ini
 ```
 
 #### Command-Line Arguments
@@ -322,7 +278,6 @@ python run_glomap.py \
 - `--input_images`: Path to directory containing input images
 - `--output`: Path to output directory (database and results will be stored here)
 - `--colmap_config`: Path to COLMAP INI configuration file (for feature extraction/matching)
-- `--glomap_config`: Path to GLOMAP INI configuration file (for mapper)
 
 **Optional:**
 - `--skip_undistortion`: Skip the image undistortion stage
@@ -331,6 +286,8 @@ python run_glomap.py \
 - `--from_stage`: Resume pipeline from a specific stage onwards
 - `--force_restart`: Clear all checkpoints and restart from the beginning
 - `--matcher_type`: Override matching type from config (choices: `exhaustive`, `sequential`, `vocab_tree`, `spatial`)
+- `--vocab_tree_path`: Path to vocabulary tree file (required for `vocab_tree` matcher)
+- `--vocab_tree_num_images`: Number of nearest images to match per image (default: 100)
 
 #### Examples
 
@@ -339,8 +296,18 @@ python run_glomap.py \
 python run_glomap.py \
   --input_images ./my_images \
   --output ./output \
+  --colmap_config ./defaultColMap.ini
+```
+
+**With vocabulary tree matching (recommended for large datasets):**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
   --colmap_config ./defaultColMap.ini \
-  --glomap_config ./defaultGloMap.ini
+  --matcher_type vocab_tree \
+  --vocab_tree_path ./vocab_tree_faiss_flickr100K_words256K.bin \
+  --vocab_tree_num_images 200
 ```
 
 **Resume from reconstruction stage:**
@@ -349,7 +316,6 @@ python run_glomap.py \
   --input_images ./my_images \
   --output ./output \
   --colmap_config ./defaultColMap.ini \
-  --glomap_config ./defaultGloMap.ini \
   --from_stage reconstruction
 ```
 
@@ -359,7 +325,6 @@ python run_glomap.py \
   --input_images ./my_images \
   --output ./output \
   --colmap_config ./defaultColMap.ini \
-  --glomap_config ./defaultGloMap.ini \
   --skip_undistortion \
   --skip_orientation
 ```
@@ -894,7 +859,83 @@ See `environment.yml` for the complete list of dependencies.
 ### Future Integrations
 Additional dependencies will be added for:
 - [hloc](https://github.com/cvg/Hierarchical-Localization) - Hierarchical localization
-- [VGG-SFM](https://github.com/facebookresearch/vggsfm) - VGG Structure-from-Motion
+
+## Troubleshooting
+
+### COLMAP vocab_tree_matcher fails with SIGABRT (return code -6)
+
+**Cause:** COLMAP 3.13+ requires FAISS-based vocabulary trees. Using older vocab trees causes a crash.
+
+**Solution:** Download the correct FAISS vocab tree:
+```bash
+wget https://github.com/colmap/colmap/releases/download/3.11.1/vocab_tree_faiss_flickr100K_words256K.bin
+```
+
+### "option cannot be specified more than once" error
+
+**Cause:** The INI config file contains parameters that are also being set via command-line arguments.
+
+**Solution:** The scripts automatically skip conflicting parameters (`vocab_tree_path`, `num_images`, etc.). If you still see this error, check your config file for duplicate entries or malformed lines.
+
+### Pipeline stuck or OOM during matching
+
+**Cause:** Exhaustive matching on large datasets requires O(n²) memory and time.
+
+**Solution:** Use vocabulary tree matching:
+```bash
+--matcher_type vocab_tree --vocab_tree_path ./vocab_tree_faiss_flickr100K_words256K.bin --vocab_tree_num_images 100
+```
+
+### Resume not working / stages re-running
+
+**Cause:** Checkpoint file may be corrupted or deleted.
+
+**Solution:** Check `.checkpoint.json` in the output directory. Delete it to force a fresh start, or use `--force_restart`.
+
+### TIFF errors during feature extraction
+
+**Cause:** Some TIFF files have incompatible metadata tags.
+
+**Solution:** Convert TIFF images to PNG/JPG:
+```bash
+mogrify -format png *.tiff
+# or
+for f in *.tiff; do convert "$f" "${f%.tiff}.png"; done
+```
+
+### COLMAP/GLOMAP not found in PATH
+
+**Cause:** Binaries not installed or not in system PATH.
+
+**Solution:** Add to PATH in your shell:
+```bash
+export PATH="/path/to/colmap/bin:$PATH"
+export PATH="/path/to/glomap/bin:$PATH"
+export LD_LIBRARY_PATH="/path/to/libs:$LD_LIBRARY_PATH"
+```
+
+### libGLEW.so.2.2 not found
+
+**Cause:** Missing OpenGL/GLEW libraries.
+
+**Solution:** Install GLEW or add library path:
+```bash
+# Ubuntu/Debian
+sudo apt install libglew-dev
+
+# Or add to library path
+export LD_LIBRARY_PATH="/path/to/glew/lib:$LD_LIBRARY_PATH"
+```
+
+### No models were reconstructed
+
+**Cause:** Insufficient matches between images, poor image quality, or wrong camera model.
+
+**Solution:**
+1. Check that images have sufficient overlap (60-80% recommended)
+2. Try different camera models in config (`OPENCV`, `SIMPLE_RADIAL`, `PINHOLE`)
+3. Increase `max_num_features` in SiftExtraction
+4. Check image quality and lighting consistency
 
 ## License
 
