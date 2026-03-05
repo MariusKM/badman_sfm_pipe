@@ -3,6 +3,9 @@
 COLMAP Hierarchical Pipeline Runner with Checkpoint Management
 Executes COLMAP SFM pipeline using hierarchical mapper for large-scale datasets,
 with post-reconstruction refinement through triangulation and bundle adjustment.
+
+Supports both standard COLMAP feature extraction/matching and hloc-based
+pipeline with modern retrieval networks for improved speed on large datasets.
 """
 
 import argparse
@@ -17,6 +20,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Optional hloc import (only needed when --use_hloc is specified)
+try:
+    from hloc_pipeline import HlocPipeline, HlocConfigParser, get_default_hloc_config_path
+    HLOC_AVAILABLE = True
+except ImportError:
+    HLOC_AVAILABLE = False
 
 
 class CheckpointManager:
@@ -104,28 +114,32 @@ class INIConfigParser:
         args = []
         if section not in self.config:
             return args
-        
+
         for key, value in self.config[section].items():
             # Skip certain global parameters and vocab tree params (set via command-line)
             if key in ['database_path', 'image_path', 'log_to_stderr', 'log_level',
                       'default_random_seed', 'vocab_tree_path', 'num_images']:
                 continue
 
-            # Skip empty values
-            if not value or not value.strip():
+            # Skip empty values (handles None, empty string, whitespace-only)
+            if value is None:
+                continue
+            # Strip inline comments (text after # or ;)
+            stripped_value = value.split('#')[0].split(';')[0].strip()
+            if not stripped_value or stripped_value == '':
                 continue
 
             # Convert INI key to COLMAP argument format
             arg_name = f"--{section}.{key}"
-            
+
             # Handle boolean values
-            if value.lower() in ['true', 'false']:
-                arg_value = '1' if value.lower() == 'true' else '0'
+            if stripped_value.lower() in ['true', 'false']:
+                arg_value = '1' if stripped_value.lower() == 'true' else '0'
             else:
-                arg_value = value
-            
+                arg_value = stripped_value
+
             args.extend([arg_name, arg_value])
-        
+
         return args
     
     def get_global_args(self) -> List[str]:
@@ -142,8 +156,9 @@ class INIConfigParser:
 
 class HierarchicalColmapPipeline:
     """Main hierarchical COLMAP pipeline executor."""
-    
-    STAGES = [
+
+    # Standard COLMAP stages
+    STAGES_STANDARD = [
         "feature_extraction",
         "feature_matching",
         "hierarchical_reconstruction",
@@ -152,49 +167,144 @@ class HierarchicalColmapPipeline:
         "undistortion",
         "model_analysis"
     ]
-    
+
+    # hloc-based stages (replaces feature extraction and matching)
+    STAGES_HLOC = [
+        "hloc_feature_extraction",
+        "hloc_global_descriptors",
+        "hloc_pair_generation",
+        "hloc_feature_matching",
+        "hloc_import_to_colmap",
+        "hloc_geometric_verification",
+        "hierarchical_reconstruction",
+        "post_processing_refinement",
+        "orientation_alignment",
+        "undistortion",
+        "model_analysis"
+    ]
+
+    # Hybrid mode: COLMAP SIFT extraction + hloc retrieval-based matching
+    STAGES_HLOC_MATCHING = [
+        "feature_extraction",
+        "hloc_export_features",
+        "hloc_global_descriptors",
+        "hloc_pair_generation",
+        "hloc_feature_matching",
+        "hloc_import_matches",
+        "hloc_geometric_verification",
+        "hierarchical_reconstruction",
+        "post_processing_refinement",
+        "orientation_alignment",
+        "undistortion",
+        "model_analysis"
+    ]
+
     def __init__(self, args):
         self.args = args
         self.input_images = Path(args.input_images).resolve()
         self.output_dir = Path(args.output).resolve()
         self.config = INIConfigParser(Path(args.config))
-        
+
+        # Determine pipeline mode
+        self.use_hloc = getattr(args, 'use_hloc', False)
+        self.use_hloc_matching = getattr(args, 'use_hloc_matching', False)
+
+        if self.use_hloc and self.use_hloc_matching:
+            raise ValueError("Cannot use both --use_hloc and --use_hloc_matching. Choose one mode.")
+
+        if self.use_hloc:
+            if not HLOC_AVAILABLE:
+                raise RuntimeError("hloc mode requested but hloc_pipeline module not available. "
+                                   "Ensure hloc_pipeline.py exists and hloc submodule is installed.")
+            self.STAGES = self.STAGES_HLOC
+        elif self.use_hloc_matching:
+            if not HLOC_AVAILABLE:
+                raise RuntimeError("hloc matching mode requested but hloc_pipeline module not available. "
+                                   "Ensure hloc_pipeline.py exists and hloc submodule is installed.")
+            self.STAGES = self.STAGES_HLOC_MATCHING
+        else:
+            self.STAGES = self.STAGES_STANDARD
+
         # Setup paths
         self.db_path = self.output_dir / "database.db"
         self.sparse_dir = self.output_dir / "sparse"
         self.oriented_dir = self.output_dir / "oriented-model"
         self.dense_dir = self.output_dir / "dense"
-        
+
         # Setup checkpoint and logging
         self.checkpoint = CheckpointManager(self.output_dir / ".checkpoint.json")
         self.setup_logging()
-        
+
         self.selected_model = None
+
+        # Initialize hloc pipeline if needed
+        self.hloc_pipeline = None
+        if self.use_hloc or self.use_hloc_matching:
+            self._init_hloc_pipeline()
     
     def setup_logging(self):
         """Setup logging configuration."""
         log_path = self.output_dir / "colmap_hierarchical_pipeline.log"
-        
+
         # Create formatter
         formatter = logging.Formatter(
             '[%(asctime)s] [%(stage)s] [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        
+
         # File handler
         file_handler = logging.FileHandler(log_path)
         file_handler.setFormatter(formatter)
-        
+
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
-        
+
         # Setup logger
         self.logger = logging.getLogger('colmap_hierarchical_pipeline')
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
-    
+
+    def _init_hloc_pipeline(self):
+        """Initialize the hloc pipeline with config and overrides."""
+        # Determine hloc config path
+        hloc_config_path = getattr(self.args, 'hloc_config', None)
+        if hloc_config_path:
+            hloc_config_path = Path(hloc_config_path)
+        else:
+            hloc_config_path = get_default_hloc_config_path()
+
+        if not hloc_config_path.exists():
+            raise FileNotFoundError(f"hloc config file not found: {hloc_config_path}")
+
+        # Parse hloc config
+        hloc_config = HlocConfigParser(hloc_config_path)
+
+        # Apply command-line overrides
+        if getattr(self.args, 'hloc_feature_type', None):
+            hloc_config.config.set('LocalFeatures', 'feature_type', self.args.hloc_feature_type)
+        if getattr(self.args, 'hloc_max_keypoints', None):
+            hloc_config.config.set('LocalFeatures', 'max_keypoints', str(self.args.hloc_max_keypoints))
+        if getattr(self.args, 'hloc_retrieval_network', None):
+            hloc_config.config.set('GlobalDescriptors', 'network', self.args.hloc_retrieval_network)
+        if getattr(self.args, 'hloc_num_matched', None):
+            hloc_config.config.set('PairGeneration', 'num_matched', str(self.args.hloc_num_matched))
+
+        # Create hloc pipeline
+        self.hloc_pipeline = HlocPipeline(
+            config=hloc_config,
+            image_dir=self.input_images,
+            output_dir=self.output_dir,
+            logger=self.logger
+        )
+
+        self.log(f"Initialized hloc pipeline with config: {hloc_config_path}")
+        self.log(f"  Feature type: {hloc_config.get('LocalFeatures', 'feature_type', 'sift')}")
+        self.log(f"  Max keypoints: {hloc_config.getint('LocalFeatures', 'max_keypoints', 8192)}")
+        self.log(f"  Retrieval network: {hloc_config.get('GlobalDescriptors', 'network', 'netvlad')}")
+        self.log(f"  Num matched: {hloc_config.getint('PairGeneration', 'num_matched', 50)}")
+
     def log(self, message: str, level: str = 'info', stage: str = 'PIPELINE'):
         """Log message with stage context."""
         extra = {'stage': stage.upper()}
@@ -384,16 +494,51 @@ class HierarchicalColmapPipeline:
         """Select the hierarchical reconstruction model."""
         if not self.sparse_dir.exists():
             return None
-        
-        # Hierarchical mapper outputs directly to sparse_dir
+
+        # Check 1: Hierarchical mapper may output directly to sparse_dir
         images_file = self.sparse_dir / "images.bin"
         if not images_file.exists():
             images_file = self.sparse_dir / "images.txt"
-        
+
         if images_file.exists():
             self.log(f"Selected model: {self.sparse_dir}")
             return self.sparse_dir
-        
+
+        # Check 2: Hierarchical mapper may output to numbered subdirectory (like standard mapper)
+        # Find all numbered subdirectories and select the one with most registered images
+        model_dirs = []
+        for subdir in self.sparse_dir.iterdir():
+            if subdir.is_dir() and subdir.name.isdigit():
+                images_bin = subdir / "images.bin"
+                images_txt = subdir / "images.txt"
+                if images_bin.exists() or images_txt.exists():
+                    model_dirs.append(subdir)
+
+        if model_dirs:
+            # If multiple models, select the one with most images (largest images.bin file)
+            if len(model_dirs) == 1:
+                self.log(f"Selected model: {model_dirs[0]}")
+                return model_dirs[0]
+            else:
+                # Find largest model by file size (proxy for most registered images)
+                best_model = None
+                best_size = 0
+                for model_dir in model_dirs:
+                    images_bin = model_dir / "images.bin"
+                    if images_bin.exists():
+                        size = images_bin.stat().st_size
+                        if size > best_size:
+                            best_size = size
+                            best_model = model_dir
+
+                if best_model:
+                    self.log(f"Selected best model from {len(model_dirs)} candidates: {best_model}")
+                    return best_model
+                else:
+                    # Fallback to first model if no .bin files
+                    self.log(f"Selected model: {model_dirs[0]}")
+                    return model_dirs[0]
+
         return None
     
     def stage_hierarchical_reconstruction(self) -> bool:
@@ -647,15 +792,134 @@ class HierarchicalColmapPipeline:
         stage = "model_analysis"
         self.log("=" * 60, stage=stage)
         self.log("Running final model analyzer", stage=stage)
-        
+
         stats = self.run_model_analyzer(stage, "final model")
-        
+
         if stats:
             self.log("Final model analysis completed", stage=stage)
             return True
-        
+
         return False
-    
+
+    # ==================== hloc Stage Methods ====================
+
+    def stage_hloc_feature_extraction(self) -> bool:
+        """hloc Stage 1: Extract local features (SIFT/R2D2/etc)."""
+        stage = "hloc_feature_extraction"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc local feature extraction", stage=stage)
+
+        try:
+            self.hloc_pipeline.extract_local_features()
+            self.log("hloc feature extraction completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc feature extraction failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_global_descriptors(self) -> bool:
+        """hloc Stage 2: Extract global descriptors for retrieval."""
+        stage = "hloc_global_descriptors"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc global descriptor extraction", stage=stage)
+
+        try:
+            self.hloc_pipeline.extract_global_descriptors()
+            self.log("hloc global descriptor extraction completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc global descriptor extraction failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_pair_generation(self) -> bool:
+        """hloc Stage 3: Generate image pairs from retrieval."""
+        stage = "hloc_pair_generation"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc pair generation", stage=stage)
+
+        try:
+            self.hloc_pipeline.generate_pairs()
+            self.log("hloc pair generation completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc pair generation failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_feature_matching(self) -> bool:
+        """hloc Stage 4: Match features for retrieved pairs."""
+        stage = "hloc_feature_matching"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc feature matching", stage=stage)
+
+        try:
+            self.hloc_pipeline.match_features()
+            self.log("hloc feature matching completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc feature matching failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_import_to_colmap(self) -> bool:
+        """hloc Stage 5: Import hloc features/matches to COLMAP database."""
+        stage = "hloc_import_to_colmap"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc import to COLMAP database", stage=stage)
+
+        try:
+            import pycolmap
+            self.hloc_pipeline.import_to_colmap_db(self.db_path, pycolmap.CameraMode.AUTO)
+            self.log("hloc import to COLMAP completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc import to COLMAP failed: {e}", level='error', stage=stage)
+            return False
+
+    # ==================== Hybrid hloc Matching Stage Methods ====================
+
+    def stage_hloc_export_features(self) -> bool:
+        """Hybrid Stage: Export COLMAP database features to hloc HDF5 format."""
+        stage = "hloc_export_features"
+        self.log("=" * 60, stage=stage)
+        self.log("Exporting COLMAP features to hloc format", stage=stage)
+
+        try:
+            self.hloc_pipeline.export_features_from_colmap_db(self.db_path)
+            self.log("Feature export completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Feature export failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_import_matches(self) -> bool:
+        """Hybrid Stage: Import hloc matches into existing COLMAP database."""
+        stage = "hloc_import_matches"
+        self.log("=" * 60, stage=stage)
+        self.log("Importing hloc matches to COLMAP database", stage=stage)
+
+        try:
+            self.hloc_pipeline.import_matches_to_colmap_db(self.db_path)
+            self.log("Match import completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Match import failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_geometric_verification(self) -> bool:
+        """Geometric verification of matches (COLMAP)."""
+        stage = "hloc_geometric_verification"
+        self.log("=" * 60, stage=stage)
+        self.log("Running geometric verification", stage=stage)
+
+        try:
+            self.hloc_pipeline.run_geometric_verification(self.db_path)
+            self.log("Geometric verification completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Geometric verification failed: {e}", level='error', stage=stage)
+            return False
+
+    # ==================== End hloc Stage Methods ====================
+
     def should_run_stage(self, stage: str) -> bool:
         """Determine if a stage should be run based on arguments and checkpoints."""
         # If specific stage requested, only run that one
@@ -698,13 +962,25 @@ class HierarchicalColmapPipeline:
         
         # Stage execution map
         stage_methods = {
+            # Standard COLMAP stages
             "feature_extraction": self.stage_feature_extraction,
             "feature_matching": self.stage_feature_matching,
             "hierarchical_reconstruction": self.stage_hierarchical_reconstruction,
             "post_processing_refinement": self.stage_post_processing_refinement,
             "orientation_alignment": self.stage_orientation_alignment,
             "undistortion": self.stage_undistortion,
-            "model_analysis": self.stage_model_analysis
+            "model_analysis": self.stage_model_analysis,
+            # hloc stages
+            "hloc_feature_extraction": self.stage_hloc_feature_extraction,
+            "hloc_global_descriptors": self.stage_hloc_global_descriptors,
+            "hloc_pair_generation": self.stage_hloc_pair_generation,
+            "hloc_feature_matching": self.stage_hloc_feature_matching,
+            "hloc_import_to_colmap": self.stage_hloc_import_to_colmap,
+            # Hybrid hloc matching stages
+            "hloc_export_features": self.stage_hloc_export_features,
+            "hloc_import_matches": self.stage_hloc_import_matches,
+            # Shared hloc stage
+            "hloc_geometric_verification": self.stage_hloc_geometric_verification,
         }
         
         # Run stages
@@ -733,11 +1009,42 @@ class HierarchicalColmapPipeline:
 
 
 def main():
+    # Determine available stages for argument choices
+    _seen = set()
+    all_stages = []
+    for s in (HierarchicalColmapPipeline.STAGES_STANDARD + HierarchicalColmapPipeline.STAGES_HLOC
+              + HierarchicalColmapPipeline.STAGES_HLOC_MATCHING):
+        if s not in _seen:
+            all_stages.append(s)
+            _seen.add(s)
+
     parser = argparse.ArgumentParser(
         description='Run COLMAP hierarchical SFM pipeline with checkpoint management',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+hloc Mode Examples:
+  # Basic hloc with SIFT + NetVLAD + hierarchical mapper
+  python run_colmap_hierarchical.py --input_images ./images --output ./output --config defaultColMap.ini --use_hloc
+
+  # Dense SIFT for Gaussian splatting with large dataset
+  python run_colmap_hierarchical.py --input_images ./images --output ./output --config defaultColMap.ini \\
+      --use_hloc --hloc_max_keypoints 16384 --hloc_num_matched 100
+
+  # Custom hloc config
+  python run_colmap_hierarchical.py --input_images ./images --output ./output --config defaultColMap.ini \\
+      --use_hloc --hloc_config myHloc.ini
+
+Hybrid hloc Matching Mode Examples:
+  # COLMAP SIFT extraction + hloc retrieval matching (unlimited keypoints)
+  python run_colmap_hierarchical.py --input_images ./images --output ./output --config defaultColMap.ini \\
+      --use_hloc_matching
+
+  # With custom retrieval network and pair count
+  python run_colmap_hierarchical.py --input_images ./images --output ./output --config defaultColMap.ini \\
+      --use_hloc_matching --hloc_retrieval_network openibl --hloc_num_matched 100
+        """
     )
-    
+
     # Required arguments
     parser.add_argument('--input_images', required=True,
                        help='Path to input image directory')
@@ -745,40 +1052,63 @@ def main():
                        help='Path to output directory for database and results')
     parser.add_argument('--config', required=True,
                        help='Path to INI configuration file')
-    
+
     # Optional flags
     parser.add_argument('--skip_undistortion', action='store_true',
                        help='Skip image undistortion stage')
     parser.add_argument('--skip_orientation', action='store_true',
                        help='Skip orientation alignment stage')
-    
+
     # Hierarchical-specific options
     parser.add_argument('--num_workers', type=int, default=None,
                        help='Number of parallel workers for hierarchical mapper (-1 for all cores)')
     parser.add_argument('--refinement_rounds', type=int, default=2,
                        help='Number of triangulation + bundle adjustment refinement rounds (default: 2)')
-    
+
     # Stage control
-    parser.add_argument('--stage', choices=HierarchicalColmapPipeline.STAGES,
+    parser.add_argument('--stage', choices=all_stages,
                        help='Run only a specific stage')
-    parser.add_argument('--from_stage', choices=HierarchicalColmapPipeline.STAGES,
+    parser.add_argument('--from_stage', choices=all_stages,
                        help='Restart from a specific stage onwards')
     parser.add_argument('--force_restart', action='store_true',
                        help='Clear all checkpoints and restart from beginning')
-    
-    # Matcher type
+
+    # Matcher type (for standard COLMAP mode)
     parser.add_argument('--matcher_type',
                        choices=['exhaustive', 'sequential', 'vocab_tree', 'spatial'],
-                       help='Override matching type from config')
+                       help='Override matching type from config (standard mode only)')
 
-    # Vocabulary tree options
+    # Vocabulary tree options (for standard COLMAP mode)
     parser.add_argument('--vocab_tree_path',
                        help='Path to vocabulary tree file (required for vocab_tree matcher)')
     parser.add_argument('--vocab_tree_num_images', type=int, default=100,
                        help='Number of images to retrieve for vocab tree matching (default: 100)')
 
+    # ==================== hloc Options ====================
+    hloc_group = parser.add_argument_group('hloc Options',
+                                            'Options for hloc-based feature extraction and matching')
+
+    hloc_group.add_argument('--use_hloc', action='store_true',
+                           help='Use hloc pipeline instead of COLMAP for feature extraction/matching')
+    hloc_group.add_argument('--use_hloc_matching', action='store_true',
+                           help='Use COLMAP SIFT extraction + hloc retrieval-based matching. '
+                                'Combines COLMAP GPU SIFT (unlimited keypoints) with hloc '
+                                'retrieval pair generation and NN-ratio matching.')
+    hloc_group.add_argument('--hloc_config',
+                           help='Path to hloc config file (default: defaultHloc.ini)')
+    hloc_group.add_argument('--hloc_feature_type',
+                           choices=['sift', 'r2d2', 'superpoint', 'disk', 'aliked'],
+                           help='Override feature type (default: from config)')
+    hloc_group.add_argument('--hloc_max_keypoints', type=int,
+                           help='Override max keypoints per image (default: from config)')
+    hloc_group.add_argument('--hloc_retrieval_network',
+                           choices=['netvlad', 'openibl', 'dir', 'megaloc'],
+                           help='Override retrieval network (default: from config)')
+    hloc_group.add_argument('--hloc_num_matched', type=int,
+                           help='Override number of top-k matches per image (default: from config)')
+
     args = parser.parse_args()
-    
+
     # Run pipeline
     pipeline = HierarchicalColmapPipeline(args)
     pipeline.run()

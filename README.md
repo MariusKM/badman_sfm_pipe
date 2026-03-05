@@ -8,7 +8,8 @@ This repository provides custom pipelines for:
 
 - **[COLMAP](https://colmap.github.io/)** - General-purpose Structure-from-Motion and Multi-View Stereo
 - **[GLOMAP](https://github.com/cvg/glomap)** - Global Structure-from-Motion
-- **[hloc](https://github.com/cvg/Hierarchical-Localization)** - Hierarchical Localization toolbox
+- **[hloc](https://github.com/cvg/Hierarchical-Localization)** - Hierarchical Localization toolbox (included as git submodule)
+- **[LightGlue](https://github.com/cvg/LightGlue)** - Deep learning feature matching
 
 ## Overview
 
@@ -22,11 +23,51 @@ This project aims to provide flexible, customizable pipelines that combine the s
 - [COLMAP](https://colmap.github.io/) (must be available in system PATH)
 - NVIDIA GPU with CUDA support (recommended for deep learning features)
 
-### Setup
+### Setup (Recommended)
 
+Use the automated setup scripts which handle everything including git submodules, conda environment, PyTorch detection, and hloc installation:
+
+**Linux/Mac:**
 ```bash
 # Clone the repository
 git clone https://github.com/MariusKM/badman_sfm_pipe.git
+cd badman_sfm_pipe
+
+# Run setup script (handles everything)
+./setup_env.sh
+
+# Activate the environment
+conda activate ./env
+```
+
+**Windows:**
+```bash
+# Clone the repository
+git clone https://github.com/MariusKM/badman_sfm_pipe.git
+cd badman_sfm_pipe
+
+# Run setup script
+setup_env.bat
+
+# Activate the environment
+conda activate .\env
+```
+
+The setup scripts will:
+1. Initialize git submodules (hloc and its dependencies)
+2. Create a local conda environment in `./env`
+3. **Detect existing PyTorch** - skips installation if PyTorch with CUDA is already available
+4. Install PyTorch with CUDA 12.4 support (only if needed)
+5. Install hloc in editable mode
+6. Verify the installation
+
+### Manual Setup
+
+If you prefer manual setup:
+
+```bash
+# Clone with submodules
+git clone --recursive https://github.com/MariusKM/badman_sfm_pipe.git
 cd badman_sfm_pipe
 
 # Create local conda environment (in ./env directory)
@@ -35,13 +76,15 @@ conda env create --prefix ./env -f environment.yml
 # Activate the environment
 conda activate ./env
 
+# Install PyTorch (if not already available)
+pip install torch==2.4.* torchvision==0.19.* torchaudio==2.4.* --index-url https://download.pytorch.org/whl/cu124
+
+# Install hloc
+pip install -e ./hloc
+
 # Verify COLMAP is available
 colmap -h
 ```
-
-**Windows users:** You can also use `setup_env.bat` to automate the environment creation.
-
-**Linux/Mac users:** You can also use `setup_env.sh` to automate the environment creation.
 
 ### Alternative: Using pip
 
@@ -674,6 +717,166 @@ output_dir/
 
 **Note:** Hierarchical mapper outputs directly to the `sparse/` directory (no numbered subdirectories).
 
+## hloc Hybrid Matching Mode (`--use_hloc_matching`)
+
+All pipeline scripts support a hybrid matching mode that combines COLMAP's GPU SIFT feature extraction with hloc's deep-learning retrieval and matching. This gives you the best of both worlds:
+
+- **COLMAP GPU SIFT**: Unlimited keypoints per image (unlike learned extractors which cap at ~2048-4096)
+- **hloc Retrieval**: Smart pair generation using deep-learning global descriptors (NetVLAD, OpenIBL) instead of brute-force exhaustive or vocab tree matching
+- **hloc Feature Matching**: Fast NN-ratio or AdaLAM matching on the exported SIFT descriptors
+
+### Why Use Hybrid Mode?
+
+| Approach | Feature Extraction | Pair Selection | Matching | Keypoint Limit |
+|---|---|---|---|---|
+| Standard COLMAP | COLMAP SIFT (GPU) | Exhaustive/Vocab Tree | COLMAP NN | Unlimited |
+| Full hloc (`--use_hloc`) | SuperPoint/DISK/etc. | NetVLAD/OpenIBL | NN-ratio/AdaLAM | ~2048-4096 |
+| **Hybrid** (`--use_hloc_matching`) | **COLMAP SIFT (GPU)** | **NetVLAD/OpenIBL** | **NN-ratio/AdaLAM** | **Unlimited** |
+
+The hybrid mode is ideal for **dense reconstruction** (e.g., Gaussian splatting) where you need maximum keypoints but also want smart, scalable pair selection for large datasets.
+
+### Pipeline Stages (Hybrid Mode)
+
+```
+COLMAP SIFT extraction  →  Export features to hloc HDF5
+        →  hloc global descriptor extraction (NetVLAD/OpenIBL)
+        →  hloc retrieval-based pair generation
+        →  hloc feature matching (NN-ratio/AdaLAM on SIFT descriptors)
+        →  Import matches back to COLMAP database
+        →  Geometric verification (RANSAC)
+        →  Reconstruction (COLMAP/GLOMAP)
+```
+
+### Configuration
+
+The hybrid mode uses two config files:
+- **COLMAP config** (`--config` or `--colmap_config`): Controls SIFT extraction parameters (max features, GPU usage, etc.)
+- **hloc config** (`--hloc_config`): Controls retrieval, pair generation, and matching settings
+
+#### hloc Configuration (`defaultHloc.ini`)
+
+Key settings in the hloc config:
+
+```ini
+[LocalFeatures]
+# Not used in hybrid mode (COLMAP handles extraction)
+
+[GlobalDescriptors]
+# Retrieval network: netvlad, openibl (recommended), dir, megaloc
+network=netvlad
+resize_max=1024
+
+[PairGeneration]
+# Top-k similar images per query (higher = better coverage, slower)
+num_matched=200
+
+[FeatureMatching]
+# Matcher: NN-ratio (fast), NN-mutual, adalam (better but slower)
+matcher=NN-ratio
+ratio_threshold=0.8
+```
+
+#### Compatible Matchers
+
+| Matcher | Requirements | Speed | Quality |
+|---|---|---|---|
+| `NN-ratio` | Descriptors only | Fast | Good (default) |
+| `NN-mutual` | Descriptors only | Fast | Good |
+| `adalam` | Descriptors + scales + orientations | Slower | Better (geometric filtering) |
+
+**Note:** LightGlue, SuperGlue, and LoFTR are **not compatible** with hybrid mode as they require learned feature-specific descriptors.
+
+### Usage Examples
+
+**COLMAP with hybrid hloc matching:**
+```bash
+python run_colmap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini \
+  --hloc_config ./defaultHloc.ini \
+  --use_hloc_matching
+```
+
+**GLOMAP with hybrid hloc matching:**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --hloc_config ./defaultHloc.ini \
+  --use_hloc_matching
+```
+
+**Refined GLOMAP with hybrid hloc matching:**
+```bash
+python run_glomap_refined.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --hloc_config ./defaultHloc.ini \
+  --use_hloc_matching
+```
+
+**Hierarchical COLMAP with hybrid hloc matching:**
+```bash
+python run_colmap_hierarchical.py \
+  --input_images ./my_images \
+  --output ./output \
+  --config ./defaultColMap.ini \
+  --hloc_config ./defaultHloc.ini \
+  --use_hloc_matching
+```
+
+**Large dataset (2000+ images, 4K, unordered):**
+```bash
+python run_glomap.py \
+  --input_images ./my_images \
+  --output ./output \
+  --colmap_config ./defaultColMap.ini \
+  --hloc_config ./defaultHloc.ini \
+  --use_hloc_matching \
+  --skip_orientation
+```
+
+#### Output Structure (Hybrid Mode)
+
+```
+output_dir/
+├── database.db              # COLMAP database (features + imported matches)
+├── hloc/                    # hloc working directory
+│   ├── feats-colmap-sift.h5 # Exported SIFT features in hloc format
+│   ├── global-feats-*.h5    # Global descriptors for retrieval
+│   ├── pairs.txt            # Generated image pairs
+│   └── matches-*.h5         # Feature matches
+├── sparse/                  # Reconstruction output
+│   ├── cameras.bin
+│   ├── images.bin
+│   └── points3D.bin
+├── oriented-model/          # Orientation-aligned model (if enabled)
+├── dense/                   # Undistorted images (if enabled)
+├── .checkpoint.json         # Pipeline checkpoint data
+└── *_pipeline.log           # Detailed execution log
+```
+
+### When to Use Hybrid Mode
+
+**Use `--use_hloc_matching` when:**
+- Dense reconstruction is the goal (Gaussian splatting, MVS)
+- Large unordered image collections (1000+ images)
+- You need unlimited keypoints per image
+- Smart pair selection matters more than brute-force matching
+
+**Use standard COLMAP matching when:**
+- Small datasets where exhaustive matching is feasible
+- No hloc/PyTorch dependency desired
+- Sequential/spatial matching is sufficient
+
+**Use full hloc (`--use_hloc`) when:**
+- Learned feature extractors (SuperPoint, DISK) are preferred
+- Sparse reconstruction is acceptable
+- End-to-end deep learning pipeline desired
+
 ## Multi-Pipeline Comparison
 
 The `run_multi_compare.py` script allows you to run and compare multiple SFM pipelines on the same dataset, generating a comprehensive report with speed and quality metrics.
@@ -840,25 +1043,24 @@ For detailed documentation of all COLMAP and GLOMAP configuration parameters, se
 ## Requirements
 
 ### System Requirements
-- Python 3.10+
+- Python 3.11+
 - [COLMAP](https://colmap.github.io/) (must be available in system PATH)
 - [GLOMAP](https://github.com/cvg/glomap) (optional, for GLOMAP pipeline)
-- NVIDIA GPU with CUDA 11.8+ (recommended for GPU acceleration)
+- NVIDIA GPU with CUDA 12.4+ (recommended for GPU acceleration and deep learning features)
 - 8GB+ RAM (16GB+ recommended for large datasets)
 
 ### Python Dependencies
 The project uses conda for dependency management. Key dependencies include:
 
-- **Deep Learning:** PyTorch 2.0+, TorchVision
-- **Computer Vision:** OpenCV, scikit-image, Pillow
+- **Deep Learning:** PyTorch 2.4+ with CUDA 12.4 (conditionally installed by setup script)
+- **Computer Vision:** OpenCV, scikit-image, Pillow, Kornia
 - **Scientific Computing:** NumPy, SciPy, Pandas
-- **Utilities:** tqdm, matplotlib, h5py
+- **SFM Tools:** pycolmap, hloc (git submodule), LightGlue
+- **Utilities:** tqdm, matplotlib, h5py, omegaconf
 
 See `environment.yml` for the complete list of dependencies.
 
-### Future Integrations
-Additional dependencies will be added for:
-- [hloc](https://github.com/cvg/Hierarchical-Localization) - Hierarchical localization
+**Note:** PyTorch is installed separately by the setup scripts. If PyTorch with CUDA is already available in your environment, it will be detected and the installation will be skipped, significantly reducing setup time.
 
 ## Troubleshooting
 

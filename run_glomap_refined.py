@@ -4,6 +4,9 @@ GLOMAP Refined Pipeline Runner with Checkpoint Management
 Executes a hybrid SFM pipeline using COLMAP for feature extraction/matching
 and GLOMAP for reconstruction, with post-processing refinement through
 triangulation and bundle adjustment rounds.
+
+Supports both standard COLMAP feature extraction/matching and hloc-based
+pipeline with modern retrieval networks for improved speed on large datasets.
 """
 
 import argparse
@@ -12,12 +15,20 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Optional hloc import (only needed when --use_hloc is specified)
+try:
+    from hloc_pipeline import HlocPipeline, HlocConfigParser, get_default_hloc_config_path
+    HLOC_AVAILABLE = True
+except ImportError:
+    HLOC_AVAILABLE = False
 
 
 class CheckpointManager:
@@ -105,7 +116,7 @@ class INIConfigParser:
         args = []
         if section not in self.config:
             return args
-        
+
         for key, value in self.config[section].items():
             # Skip certain global parameters and vocab tree params (set via command-line)
             if key in ['database_path', 'image_path', 'output_path',
@@ -113,21 +124,25 @@ class INIConfigParser:
                       'vocab_tree_path', 'num_images']:
                 continue
 
-            # Skip empty values
-            if not value or not value.strip():
+            # Skip empty values (handles None, empty string, whitespace-only)
+            if value is None:
+                continue
+            # Strip inline comments (text after # or ;)
+            stripped_value = value.split('#')[0].split(';')[0].strip()
+            if not stripped_value or stripped_value == '':
                 continue
 
             # Convert INI key to command-line argument format
             arg_name = f"--{section}.{key}"
-            
+
             # Handle boolean values
-            if value.lower() in ['true', 'false']:
-                arg_value = '1' if value.lower() == 'true' else '0'
+            if stripped_value.lower() in ['true', 'false']:
+                arg_value = '1' if stripped_value.lower() == 'true' else '0'
             else:
-                arg_value = value
-            
+                arg_value = stripped_value
+
             args.extend([arg_name, arg_value])
-        
+
         return args
     
     def get_global_args(self) -> List[str]:
@@ -144,8 +159,9 @@ class INIConfigParser:
 
 class GloMapRefinedPipeline:
     """Main GLOMAP refined pipeline executor with post-processing refinement."""
-    
-    STAGES = [
+
+    # Standard COLMAP/GLOMAP stages
+    STAGES_STANDARD = [
         "feature_extraction",
         "feature_matching",
         "reconstruction",
@@ -154,49 +170,144 @@ class GloMapRefinedPipeline:
         "undistortion",
         "model_analysis"
     ]
-    
+
+    # hloc-based stages (replaces feature extraction and matching)
+    STAGES_HLOC = [
+        "hloc_feature_extraction",
+        "hloc_global_descriptors",
+        "hloc_pair_generation",
+        "hloc_feature_matching",
+        "hloc_import_to_colmap",
+        "hloc_geometric_verification",
+        "reconstruction",
+        "post_processing_refinement",
+        "orientation_alignment",
+        "undistortion",
+        "model_analysis"
+    ]
+
+    # Hybrid mode: COLMAP SIFT extraction + hloc retrieval-based matching
+    STAGES_HLOC_MATCHING = [
+        "feature_extraction",
+        "hloc_export_features",
+        "hloc_global_descriptors",
+        "hloc_pair_generation",
+        "hloc_feature_matching",
+        "hloc_import_matches",
+        "hloc_geometric_verification",
+        "reconstruction",
+        "post_processing_refinement",
+        "orientation_alignment",
+        "undistortion",
+        "model_analysis"
+    ]
+
     def __init__(self, args):
         self.args = args
         self.input_images = Path(args.input_images).resolve()
         self.output_dir = Path(args.output).resolve()
         self.colmap_config = INIConfigParser(Path(args.colmap_config))
-        
+
+        # Determine pipeline mode
+        self.use_hloc = getattr(args, 'use_hloc', False)
+        self.use_hloc_matching = getattr(args, 'use_hloc_matching', False)
+
+        if self.use_hloc and self.use_hloc_matching:
+            raise ValueError("Cannot use both --use_hloc and --use_hloc_matching. Choose one mode.")
+
+        if self.use_hloc:
+            if not HLOC_AVAILABLE:
+                raise RuntimeError("hloc mode requested but hloc_pipeline module not available. "
+                                   "Ensure hloc_pipeline.py exists and hloc submodule is installed.")
+            self.STAGES = self.STAGES_HLOC
+        elif self.use_hloc_matching:
+            if not HLOC_AVAILABLE:
+                raise RuntimeError("hloc matching mode requested but hloc_pipeline module not available. "
+                                   "Ensure hloc_pipeline.py exists and hloc submodule is installed.")
+            self.STAGES = self.STAGES_HLOC_MATCHING
+        else:
+            self.STAGES = self.STAGES_STANDARD
+
         # Setup paths
         self.db_path = self.output_dir / "database.db"
         self.sparse_dir = self.output_dir / "sparse"
         self.oriented_dir = self.output_dir / "oriented-model"
         self.dense_dir = self.output_dir / "dense"
-        
+
         # Setup checkpoint and logging
         self.checkpoint = CheckpointManager(self.output_dir / ".checkpoint.json")
         self.setup_logging()
-        
+
         self.selected_model = None
+
+        # Initialize hloc pipeline if needed
+        self.hloc_pipeline = None
+        if self.use_hloc or self.use_hloc_matching:
+            self._init_hloc_pipeline()
     
     def setup_logging(self):
         """Setup logging configuration."""
         log_path = self.output_dir / "glomap_refined_pipeline.log"
-        
+
         # Create formatter
         formatter = logging.Formatter(
             '[%(asctime)s] [%(stage)s] [%(levelname)s] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        
+
         # File handler
         file_handler = logging.FileHandler(log_path)
         file_handler.setFormatter(formatter)
-        
+
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
-        
+
         # Setup logger
         self.logger = logging.getLogger('glomap_refined_pipeline')
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
-    
+
+    def _init_hloc_pipeline(self):
+        """Initialize the hloc pipeline with config and overrides."""
+        # Determine hloc config path
+        hloc_config_path = getattr(self.args, 'hloc_config', None)
+        if hloc_config_path:
+            hloc_config_path = Path(hloc_config_path)
+        else:
+            hloc_config_path = get_default_hloc_config_path()
+
+        if not hloc_config_path.exists():
+            raise FileNotFoundError(f"hloc config file not found: {hloc_config_path}")
+
+        # Parse hloc config
+        hloc_config = HlocConfigParser(hloc_config_path)
+
+        # Apply command-line overrides
+        if getattr(self.args, 'hloc_feature_type', None):
+            hloc_config.config.set('LocalFeatures', 'feature_type', self.args.hloc_feature_type)
+        if getattr(self.args, 'hloc_max_keypoints', None):
+            hloc_config.config.set('LocalFeatures', 'max_keypoints', str(self.args.hloc_max_keypoints))
+        if getattr(self.args, 'hloc_retrieval_network', None):
+            hloc_config.config.set('GlobalDescriptors', 'network', self.args.hloc_retrieval_network)
+        if getattr(self.args, 'hloc_num_matched', None):
+            hloc_config.config.set('PairGeneration', 'num_matched', str(self.args.hloc_num_matched))
+
+        # Create hloc pipeline
+        self.hloc_pipeline = HlocPipeline(
+            config=hloc_config,
+            image_dir=self.input_images,
+            output_dir=self.output_dir,
+            logger=self.logger
+        )
+
+        self.log(f"Initialized hloc pipeline with config: {hloc_config_path}")
+        self.log(f"  Feature type: {hloc_config.get('LocalFeatures', 'feature_type', 'sift')}")
+        self.log(f"  Max keypoints: {hloc_config.getint('LocalFeatures', 'max_keypoints', 8192)}")
+        self.log(f"  Retrieval network: {hloc_config.get('GlobalDescriptors', 'network', 'netvlad')}")
+        self.log(f"  Num matched: {hloc_config.getint('PairGeneration', 'num_matched', 50)}")
+
     def log(self, message: str, level: str = 'info', stage: str = 'PIPELINE'):
         """Log message with stage context."""
         extra = {'stage': stage.upper()}
@@ -517,24 +628,96 @@ class GloMapRefinedPipeline:
         
         return {}
     
+    def save_model_checkpoint(self, source_path: Path, checkpoint_name: str, stage: str) -> Optional[Path]:
+        """Save a copy of the current model as a checkpoint."""
+        checkpoint_dir = self.output_dir / "refinement_checkpoints" / checkpoint_name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy all model files
+        model_files = ['cameras.bin', 'images.bin', 'points3D.bin',
+                       'cameras.txt', 'images.txt', 'points3D.txt']
+
+        copied_files = 0
+        for filename in model_files:
+            src_file = source_path / filename
+            if src_file.exists():
+                shutil.copy2(src_file, checkpoint_dir / filename)
+                copied_files += 1
+
+        if copied_files > 0:
+            self.log(f"Saved model checkpoint: {checkpoint_name} ({copied_files} files)", stage=stage)
+            return checkpoint_dir
+        else:
+            self.log(f"Warning: No model files found to checkpoint", level='warning', stage=stage)
+            return None
+
+    def run_point_filtering(self, input_path: Path, output_path: Path, stage: str) -> bool:
+        """Run COLMAP point filtering on the model."""
+        self.log(f"Running point filtering (max_reproj_error={self.args.filter_max_reproj_error}, "
+                f"min_tri_angle={self.args.filter_min_tri_angle})", stage=stage)
+
+        cmd = [
+            'colmap', 'point_filtering',
+            '--input_path', str(input_path),
+            '--output_path', str(output_path),
+            '--max_reproj_error', str(self.args.filter_max_reproj_error),
+            '--min_tri_angle', str(self.args.filter_min_tri_angle)
+        ]
+
+        success, output = self.run_command(cmd, stage)
+        return success
+
     def stage_post_processing_refinement(self) -> bool:
         """Stage 4: Post-processing refinement with triangulation and bundle adjustment."""
         stage = "post_processing_refinement"
         self.log("=" * 60, stage=stage)
         self.log(f"Starting post-processing refinement ({self.args.refinement_rounds} rounds)", stage=stage)
-        
+
         if not self.selected_model:
             self.selected_model = self.select_best_model()
             if not self.selected_model:
                 self.log("No model available for refinement", level='error', stage=stage)
                 return False
-        
+
         # Initial model analysis
         initial_stats = self.run_model_analyzer(stage, "before refinement")
-        
+
+        # Save initial model checkpoint if requested
+        if getattr(self.args, 'save_intermediate_models', False):
+            self.save_model_checkpoint(self.selected_model, "round_0_initial", stage)
+
+        # Optional: Run initial filtering before refinement
+        if getattr(self.args, 'enable_filtering', False):
+            self.log("Running initial point filtering before refinement", stage=stage)
+
+            # Filter in-place (output to same directory)
+            filter_success = self.run_point_filtering(
+                self.selected_model,
+                self.selected_model,
+                stage
+            )
+
+            if not filter_success:
+                self.log("Initial point filtering failed", level='error', stage=stage)
+                return False
+
+            # Analyze after filtering
+            filter_stats = self.run_model_analyzer(stage, "after initial filtering")
+
+            if 'num_points' in initial_stats and 'num_points' in filter_stats:
+                removed = initial_stats['num_points'] - filter_stats['num_points']
+                self.log(f"Filtering removed {removed} points "
+                        f"({initial_stats['num_points']} -> {filter_stats['num_points']})", stage=stage)
+
+            # Save post-filter checkpoint if requested
+            if getattr(self.args, 'save_intermediate_models', False):
+                self.save_model_checkpoint(self.selected_model, "round_0_filtered", stage)
+
+        ba_stats = initial_stats  # Initialize for final comparison
+
         for round_num in range(1, self.args.refinement_rounds + 1):
             self.log(f"--- Refinement Round {round_num}/{self.args.refinement_rounds} ---", stage=stage)
-            
+
             # Step 1: Point Triangulation
             self.log(f"Round {round_num}: Running point triangulation", stage=stage)
             tri_cmd = [
@@ -545,18 +728,46 @@ class GloMapRefinedPipeline:
                 '--output_path', str(self.selected_model),
                 '--clear_points', '0'  # Don't clear existing points
             ]
-            
+
             # Add mapper triangulation parameters
             tri_cmd.extend(self.colmap_config.get_section_args('Mapper'))
-            
+
             tri_success, tri_output = self.run_command(tri_cmd, stage)
             if not tri_success:
                 self.log(f"Triangulation failed in round {round_num}", level='error', stage=stage)
                 return False
-            
+
             # Model analysis after triangulation
             tri_stats = self.run_model_analyzer(stage, f"round {round_num} after triangulation")
-            
+
+            # Save post-triangulation checkpoint if requested
+            if getattr(self.args, 'save_intermediate_models', False):
+                self.save_model_checkpoint(
+                    self.selected_model,
+                    f"round_{round_num}_after_triangulation",
+                    stage
+                )
+
+            # Optional: Run filtering before BA (helps prevent outliers from affecting optimization)
+            if getattr(self.args, 'enable_filtering', False):
+                self.log(f"Round {round_num}: Running point filtering before BA", stage=stage)
+
+                filter_success = self.run_point_filtering(
+                    self.selected_model,
+                    self.selected_model,
+                    stage
+                )
+
+                if not filter_success:
+                    self.log(f"Point filtering failed in round {round_num}", level='warning', stage=stage)
+                    # Continue anyway - filtering failure shouldn't stop the pipeline
+                else:
+                    filter_stats = self.run_model_analyzer(stage, f"round {round_num} after filtering")
+                    if 'num_points' in tri_stats and 'num_points' in filter_stats:
+                        removed = tri_stats['num_points'] - filter_stats['num_points']
+                        self.log(f"Round {round_num}: Filtering removed {removed} points", stage=stage)
+                    tri_stats = filter_stats  # Update for comparison
+
             # Step 2: Bundle Adjustment
             self.log(f"Round {round_num}: Running bundle adjustment", stage=stage)
             ba_cmd = [
@@ -564,35 +775,47 @@ class GloMapRefinedPipeline:
                 '--input_path', str(self.selected_model),
                 '--output_path', str(self.selected_model)
             ]
-            
+
             # Add bundle adjustment parameters
             ba_cmd.extend(self.colmap_config.get_section_args('BundleAdjustment'))
-            
+
             ba_success, ba_output = self.run_command(ba_cmd, stage)
             if not ba_success:
                 self.log(f"Bundle adjustment failed in round {round_num}", level='error', stage=stage)
                 return False
-            
+
             # Model analysis after bundle adjustment
             ba_stats = self.run_model_analyzer(stage, f"round {round_num} after bundle adjustment")
-            
+
+            # Save post-BA checkpoint if requested
+            if getattr(self.args, 'save_intermediate_models', False):
+                self.save_model_checkpoint(
+                    self.selected_model,
+                    f"round_{round_num}_after_ba",
+                    stage
+                )
+
             # Log improvement
             if 'mean_reproj_error' in ba_stats and 'mean_reproj_error' in tri_stats:
                 improvement = tri_stats['mean_reproj_error'] - ba_stats['mean_reproj_error']
-                self.log(f"Round {round_num}: Reprojection error improvement: {improvement:.4f} pixels", 
+                self.log(f"Round {round_num}: Reprojection error improvement: {improvement:.4f} pixels",
                         stage=stage)
-        
+
         # Final comparison
         self.log("=== Refinement Summary ===", stage=stage)
         if 'num_points' in initial_stats and 'num_points' in ba_stats:
             self.log(f"Points: {initial_stats['num_points']} -> {ba_stats['num_points']}", stage=stage)
         if 'num_observations' in initial_stats and 'num_observations' in ba_stats:
-            self.log(f"Observations: {initial_stats['num_observations']} -> {ba_stats['num_observations']}", 
+            self.log(f"Observations: {initial_stats['num_observations']} -> {ba_stats['num_observations']}",
                     stage=stage)
         if 'mean_reproj_error' in initial_stats and 'mean_reproj_error' in ba_stats:
-            self.log(f"Mean reproj error: {initial_stats['mean_reproj_error']} -> {ba_stats['mean_reproj_error']}", 
+            self.log(f"Mean reproj error: {initial_stats['mean_reproj_error']} -> {ba_stats['mean_reproj_error']}",
                     stage=stage)
-        
+
+        if getattr(self.args, 'save_intermediate_models', False):
+            checkpoint_dir = self.output_dir / "refinement_checkpoints"
+            self.log(f"Intermediate models saved to: {checkpoint_dir}", stage=stage)
+
         self.log("Post-processing refinement completed", stage=stage)
         return True
     
@@ -677,15 +900,134 @@ class GloMapRefinedPipeline:
         stage = "model_analysis"
         self.log("=" * 60, stage=stage)
         self.log("Running final model analyzer (COLMAP)", stage=stage)
-        
+
         stats = self.run_model_analyzer(stage, "final model")
-        
+
         if stats:
             self.log("Final model analysis completed", stage=stage)
             return True
-        
+
         return False
-    
+
+    # ==================== hloc Stage Methods ====================
+
+    def stage_hloc_feature_extraction(self) -> bool:
+        """hloc Stage 1: Extract local features (SIFT/R2D2/etc)."""
+        stage = "hloc_feature_extraction"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc local feature extraction", stage=stage)
+
+        try:
+            self.hloc_pipeline.extract_local_features()
+            self.log("hloc feature extraction completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc feature extraction failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_global_descriptors(self) -> bool:
+        """hloc Stage 2: Extract global descriptors for retrieval."""
+        stage = "hloc_global_descriptors"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc global descriptor extraction", stage=stage)
+
+        try:
+            self.hloc_pipeline.extract_global_descriptors()
+            self.log("hloc global descriptor extraction completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc global descriptor extraction failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_pair_generation(self) -> bool:
+        """hloc Stage 3: Generate image pairs from retrieval."""
+        stage = "hloc_pair_generation"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc pair generation", stage=stage)
+
+        try:
+            self.hloc_pipeline.generate_pairs()
+            self.log("hloc pair generation completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc pair generation failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_feature_matching(self) -> bool:
+        """hloc Stage 4: Match features for retrieved pairs."""
+        stage = "hloc_feature_matching"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc feature matching", stage=stage)
+
+        try:
+            self.hloc_pipeline.match_features()
+            self.log("hloc feature matching completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc feature matching failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_import_to_colmap(self) -> bool:
+        """hloc Stage 5: Import hloc features/matches to COLMAP database."""
+        stage = "hloc_import_to_colmap"
+        self.log("=" * 60, stage=stage)
+        self.log("Starting hloc import to COLMAP database", stage=stage)
+
+        try:
+            import pycolmap
+            self.hloc_pipeline.import_to_colmap_db(self.db_path, pycolmap.CameraMode.AUTO)
+            self.log("hloc import to COLMAP completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"hloc import to COLMAP failed: {e}", level='error', stage=stage)
+            return False
+
+    # ==================== Hybrid hloc Matching Stage Methods ====================
+
+    def stage_hloc_export_features(self) -> bool:
+        """Hybrid Stage: Export COLMAP database features to hloc HDF5 format."""
+        stage = "hloc_export_features"
+        self.log("=" * 60, stage=stage)
+        self.log("Exporting COLMAP features to hloc format", stage=stage)
+
+        try:
+            self.hloc_pipeline.export_features_from_colmap_db(self.db_path)
+            self.log("Feature export completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Feature export failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_import_matches(self) -> bool:
+        """Hybrid Stage: Import hloc matches into existing COLMAP database."""
+        stage = "hloc_import_matches"
+        self.log("=" * 60, stage=stage)
+        self.log("Importing hloc matches to COLMAP database", stage=stage)
+
+        try:
+            self.hloc_pipeline.import_matches_to_colmap_db(self.db_path)
+            self.log("Match import completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Match import failed: {e}", level='error', stage=stage)
+            return False
+
+    def stage_hloc_geometric_verification(self) -> bool:
+        """Geometric verification of matches (COLMAP)."""
+        stage = "hloc_geometric_verification"
+        self.log("=" * 60, stage=stage)
+        self.log("Running geometric verification", stage=stage)
+
+        try:
+            self.hloc_pipeline.run_geometric_verification(self.db_path)
+            self.log("Geometric verification completed", stage=stage)
+            return True
+        except Exception as e:
+            self.log(f"Geometric verification failed: {e}", level='error', stage=stage)
+            return False
+
+    # ==================== End hloc Stage Methods ====================
+
     def should_run_stage(self, stage: str) -> bool:
         """Determine if a stage should be run based on arguments and checkpoints."""
         # If specific stage requested, only run that one
@@ -728,13 +1070,25 @@ class GloMapRefinedPipeline:
         
         # Stage execution map
         stage_methods = {
+            # Standard COLMAP/GLOMAP stages
             "feature_extraction": self.stage_feature_extraction,
             "feature_matching": self.stage_feature_matching,
             "reconstruction": self.stage_reconstruction,
             "post_processing_refinement": self.stage_post_processing_refinement,
             "orientation_alignment": self.stage_orientation_alignment,
             "undistortion": self.stage_undistortion,
-            "model_analysis": self.stage_model_analysis
+            "model_analysis": self.stage_model_analysis,
+            # hloc stages
+            "hloc_feature_extraction": self.stage_hloc_feature_extraction,
+            "hloc_global_descriptors": self.stage_hloc_global_descriptors,
+            "hloc_pair_generation": self.stage_hloc_pair_generation,
+            "hloc_feature_matching": self.stage_hloc_feature_matching,
+            "hloc_import_to_colmap": self.stage_hloc_import_to_colmap,
+            # Hybrid hloc matching stages
+            "hloc_export_features": self.stage_hloc_export_features,
+            "hloc_import_matches": self.stage_hloc_import_matches,
+            # Shared hloc stage
+            "hloc_geometric_verification": self.stage_hloc_geometric_verification,
         }
         
         # Run stages
@@ -763,11 +1117,66 @@ class GloMapRefinedPipeline:
 
 
 def main():
+    # Determine available stages for argument choices
+    _seen = set()
+    all_stages = []
+    for s in (GloMapRefinedPipeline.STAGES_STANDARD + GloMapRefinedPipeline.STAGES_HLOC
+              + GloMapRefinedPipeline.STAGES_HLOC_MATCHING):
+        if s not in _seen:
+            all_stages.append(s)
+            _seen.add(s)
+
     parser = argparse.ArgumentParser(
         description='Run GLOMAP refined SFM pipeline with post-processing and checkpoint management',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Refinement Examples:
+  # Basic refinement with 2 rounds (default)
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini
+
+  # Refinement with filtering and intermediate model checkpoints
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --enable_filtering --save_intermediate_models --refinement_rounds 3
+
+  # Custom filtering thresholds (stricter filtering)
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --enable_filtering --filter_max_reproj_error 2.0 --filter_min_tri_angle 1.5
+
+hloc Mode Examples:
+  # Basic hloc with SIFT + NetVLAD + refinement
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini --use_hloc
+
+  # Dense SIFT for Gaussian splatting with 3 refinement rounds and filtering
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --use_hloc --hloc_max_keypoints 16384 --hloc_num_matched 50 --refinement_rounds 3 \\
+      --enable_filtering --save_intermediate_models
+
+  # Custom hloc config
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --use_hloc --hloc_config myHloc.ini
+
+Hybrid hloc Matching Mode Examples:
+  # COLMAP SIFT extraction + hloc retrieval matching (unlimited keypoints)
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --use_hloc_matching
+
+  # With custom retrieval network and pair count
+  python run_glomap_refined.py --input_images ./images --output ./output --colmap_config defaultColMap.ini \\
+      --use_hloc_matching --hloc_retrieval_network openibl --hloc_num_matched 100
+
+Intermediate Model Checkpoints:
+  When --save_intermediate_models is enabled, models are saved to:
+    <output>/refinement_checkpoints/
+      round_0_initial/           # Initial model before any refinement
+      round_0_filtered/          # After initial filtering (if --enable_filtering)
+      round_1_after_triangulation/
+      round_1_after_ba/
+      round_2_after_triangulation/
+      round_2_after_ba/
+      ...
+        """
     )
-    
+
     # Required arguments
     parser.add_argument('--input_images', required=True,
                        help='Path to input image directory')
@@ -775,38 +1184,73 @@ def main():
                        help='Path to output directory for database and results')
     parser.add_argument('--colmap_config', required=True,
                        help='Path to COLMAP INI configuration file (for feature extraction/matching)')
-    
+
     # Optional flags
     parser.add_argument('--skip_undistortion', action='store_true',
                        help='Skip image undistortion stage')
     parser.add_argument('--skip_orientation', action='store_true',
                        help='Skip orientation alignment stage')
-    
+
     # Refinement options
     parser.add_argument('--refinement_rounds', type=int, default=2,
                        help='Number of triangulation + bundle adjustment refinement rounds (default: 2)')
-    
+    parser.add_argument('--save_intermediate_models', action='store_true',
+                       help='Save model checkpoints after each triangulation and BA pass')
+
+    # Filtering options
+    filter_group = parser.add_argument_group('Filtering Options',
+                                              'Options for point/image filtering before refinement')
+    filter_group.add_argument('--enable_filtering', action='store_true',
+                             help='Enable point filtering before refinement BA')
+    filter_group.add_argument('--filter_max_reproj_error', type=float, default=3.0,
+                             help='Maximum reprojection error for point filtering (default: 3.0 pixels)')
+    filter_group.add_argument('--filter_min_tri_angle', type=float, default=1.5,
+                             help='Minimum triangulation angle for point filtering (default: 1.5 degrees)')
+
     # Stage control
-    parser.add_argument('--stage', choices=GloMapRefinedPipeline.STAGES,
+    parser.add_argument('--stage', choices=all_stages,
                        help='Run only a specific stage')
-    parser.add_argument('--from_stage', choices=GloMapRefinedPipeline.STAGES,
+    parser.add_argument('--from_stage', choices=all_stages,
                        help='Restart from a specific stage onwards')
     parser.add_argument('--force_restart', action='store_true',
                        help='Clear all checkpoints and restart from beginning')
-    
-    # Matcher type
+
+    # Matcher type (for standard COLMAP mode)
     parser.add_argument('--matcher_type',
                        choices=['exhaustive', 'sequential', 'vocab_tree', 'spatial'],
-                       help='Override matching type from config')
+                       help='Override matching type from config (standard mode only)')
 
-    # Vocabulary tree options
+    # Vocabulary tree options (for standard COLMAP mode)
     parser.add_argument('--vocab_tree_path',
                        help='Path to vocabulary tree file (required for vocab_tree matcher)')
     parser.add_argument('--vocab_tree_num_images', type=int, default=100,
                        help='Number of images to retrieve for vocab tree matching (default: 100)')
 
+    # ==================== hloc Options ====================
+    hloc_group = parser.add_argument_group('hloc Options',
+                                            'Options for hloc-based feature extraction and matching')
+
+    hloc_group.add_argument('--use_hloc', action='store_true',
+                           help='Use hloc pipeline instead of COLMAP for feature extraction/matching')
+    hloc_group.add_argument('--use_hloc_matching', action='store_true',
+                           help='Use COLMAP SIFT extraction + hloc retrieval-based matching. '
+                                'Combines COLMAP GPU SIFT (unlimited keypoints) with hloc '
+                                'retrieval pair generation and NN-ratio matching.')
+    hloc_group.add_argument('--hloc_config',
+                           help='Path to hloc config file (default: defaultHloc.ini)')
+    hloc_group.add_argument('--hloc_feature_type',
+                           choices=['sift', 'r2d2', 'superpoint', 'disk', 'aliked'],
+                           help='Override feature type (default: from config)')
+    hloc_group.add_argument('--hloc_max_keypoints', type=int,
+                           help='Override max keypoints per image (default: from config)')
+    hloc_group.add_argument('--hloc_retrieval_network',
+                           choices=['netvlad', 'openibl', 'dir', 'megaloc'],
+                           help='Override retrieval network (default: from config)')
+    hloc_group.add_argument('--hloc_num_matched', type=int,
+                           help='Override number of top-k matches per image (default: from config)')
+
     args = parser.parse_args()
-    
+
     # Run pipeline
     pipeline = GloMapRefinedPipeline(args)
     pipeline.run()
